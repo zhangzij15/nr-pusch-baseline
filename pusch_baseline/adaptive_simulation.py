@@ -189,7 +189,12 @@ class SoundingChannel:
 
 
 def _sounding_epochs(settings, tb_limit):
-    """Yield an SRS slot followed by its PUSCH slots on the physical timeline."""
+    """Yield an SRS slot followed by its PUSCH slots on the physical timeline.
+
+    With a TDD pattern, SRS uses the first S slot, then each first S slot at
+    least ``srs_period_slots`` after the previous SRS (the TS 38.211 periodicity
+    T_SRS whenever it is a multiple of the S-slot spacing).
+    """
     pattern = settings.tdd_pattern
     if pattern is None:
         data_per_epoch = settings.srs_period_slots - 1
@@ -203,7 +208,7 @@ def _sounding_epochs(settings, tb_limit):
     sent = 0
     for slot in count():
         kind = pattern[slot % len(pattern)]
-        if kind == "S" and (not epoch or slot - epoch[0] > settings.srs_period_slots):
+        if kind == "S" and (not epoch or slot - epoch[0] >= settings.srs_period_slots):
             if epoch:
                 yield epoch
             epoch = [slot]
@@ -396,7 +401,7 @@ def _next_stage_slot_offset(settings, tb_limit: int) -> int:
     if pattern is None:
         return last_srs + settings.srs_period_slots - first_srs
     for slot in count(last_srs + 1):
-        if pattern[slot % len(pattern)] == "S" and slot - last_srs > settings.srs_period_slots:
+        if pattern[slot % len(pattern)] == "S" and slot - last_srs >= settings.srs_period_slots:
             return slot - first_srs
 
 
@@ -465,7 +470,9 @@ def _build_adaptive_metadata(
         metadata["channel_fingerprints_sha256"] = {"warmup": warmup_hash, "measurement": measurement_hash}
     if tdd:
         metadata["adaptation"]["tdd_pattern"] = settings.tdd_pattern
-        metadata["adaptation"]["srs_trigger"] = "first S slot, then elapsed slots strictly greater than configured period"
+        metadata["adaptation"]["srs_trigger"] = (
+            "first S slot, then the first S slot at least srs_period_slots after the previous SRS"
+        )
 
 
 def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codebooks=None, on_progress=None):
@@ -580,7 +587,8 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
             for data_slot, response in zip(epoch[1:], responses):
                 if channel_hash is not None:
                     channel_hash.update(np.asarray(response[..., 0, 0]).tobytes())
-                slot_number = (cfg.carrier.slot_number + data_slot) % slots_per_frame
+                # DM-RS and scrambling follow the physical slot of the shared CIR timeline.
+                slot_number = (cfg.carrier.slot_number + slot_offset + data_slot) % slots_per_frame
                 for snr_db, grants in decisions.items():
                     state = states[snr_db]
                     if state.stop_reason != "max_tb":

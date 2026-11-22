@@ -68,7 +68,7 @@ def _restore_legacy_manifest_defaults(manifest):
 
 
 def _restore_legacy_bank_defaults(bank):
-    return {"tx_power_mode": "full_power", "srs_power_per_active_re": 1.0,
+    return {"tx_power_mode": "full_power", "srs_estimator": "real", "srs_power_per_active_re": 1.0,
             "ue_yaw_offsets_deg": [], **bank}
 
 

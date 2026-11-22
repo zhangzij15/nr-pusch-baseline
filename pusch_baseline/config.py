@@ -322,6 +322,18 @@ class OllaSettings:
         deviation = abs(bler - self.target_bler)
         return deviation <= self.tolerance or math.isclose(deviation, self.tolerance)
 
+    def fit_budget(self, num_tb_per_snr: int, warmup_tb: int | None = None) -> OllaSettings:
+        """Override the warmup and shrink window_tb so the TB budgets stay valid.
+
+        A stability gate needs three windows in both stages; otherwise the
+        window only has to fit within the warmup.
+        """
+        warmup = self.warmup_tb if warmup_tb is None else warmup_tb
+        max_window = warmup
+        if self.max_mcs_spread is not None:
+            max_window = min(warmup // 3, num_tb_per_snr // 3)
+        return replace(self, warmup_tb=warmup, window_tb=max(1, min(self.window_tb, max_window)))
+
 
 @dataclass(frozen=True)
 class AdaptationSettings:

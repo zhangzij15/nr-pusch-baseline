@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Override the adaptive PUSCH and SRS power model.")
     parser.add_argument("--channel-evolution", choices=("per_period", "continuous"),
                         help="Override CIR continuity across SRS periods.")
+    parser.add_argument("--seed", type=int, help="Override the channel, SRS-noise and payload seed.")
     args = parser.parse_args(argv)
 
     try:
@@ -88,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
             sweep_overrides["snr_db"] = args.snr
         if args.num_tb is not None:
             sweep_overrides["num_tb_per_snr"] = args.num_tb
+        if args.seed is not None:
+            sweep_overrides["seed"] = args.seed
         cfg = replace(cfg, sweep=replace(cfg.sweep, **sweep_overrides))
         if args.ue_yaw_offsets is not None:
             cfg = replace(cfg, channel=replace(cfg.channel, ue_yaw_offsets_deg=args.ue_yaw_offsets))
@@ -99,14 +102,12 @@ def main(argv: list[str] | None = None) -> int:
             if cfg.adaptation is None:
                 raise ValueError("--channel-evolution requires an adaptive configuration")
             cfg = replace(cfg, adaptation=replace(cfg.adaptation, channel_evolution=args.channel_evolution))
-        if args.warmup_tb is not None:
-            if cfg.adaptation is None or cfg.adaptation.olla is None:
-                raise ValueError("--warmup-tb requires adaptation.olla in the configuration")
-            olla = cfg.adaptation.olla
-            max_window = args.warmup_tb
-            if olla.max_mcs_spread is not None:
-                max_window = min(args.warmup_tb // 3, cfg.sweep.num_tb_per_snr // 3)
-            olla = replace(olla, warmup_tb=args.warmup_tb, window_tb=max(1, min(olla.window_tb, max_window)))
+        if args.warmup_tb is not None and (cfg.adaptation is None or cfg.adaptation.olla is None):
+            raise ValueError("--warmup-tb requires adaptation.olla in the configuration")
+        if cfg.adaptation is not None and cfg.adaptation.olla is not None and (
+            args.warmup_tb is not None or args.num_tb is not None
+        ):
+            olla = cfg.adaptation.olla.fit_budget(cfg.sweep.num_tb_per_snr, args.warmup_tb)
             cfg = replace(cfg, adaptation=replace(cfg.adaptation, olla=olla))
         cfg.validate()
 

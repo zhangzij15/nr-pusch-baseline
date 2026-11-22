@@ -8,7 +8,7 @@
 [![Sionna](https://img.shields.io/badge/Sionna-1.2.2-76B900)](requirements.txt)
 [![3GPP NR](https://img.shields.io/badge/3GPP-NR%20Rel--15%2F16-00529B)](https://www.3gpp.org/dynareport/38211.htm)
 [![Channel Mode](https://img.shields.io/badge/CIR-Per--Period%20%26%20Continuous-0EA5E9)](#信道时间演化模式与信道预测接口)
-[![Tests](https://img.shields.io/badge/Unit%20Tests-86%20Pure%20Python-16A34A)](#运行单元测试)
+[![Tests](https://img.shields.io/badge/Unit%20Tests-90%20Pure%20Python-16A34A)](#运行单元测试)
 
 <p>
   <a href="#仿真效果示例">仿真效果示例</a> •
@@ -38,14 +38,14 @@
   <img src="docs/figures/thp_vs_snr_ice_rce_continuous.png" alt="PUSCH Throughput vs SNR | SRS and DM-RS ICE vs RCE | Continuous CIR" width="94%">
 </p>
 
-- **场景设定**：单 4 端口循环移位 SRS 资源（comb-2、4 连续重复符号、循环移位 `0/2/4/6`）+ Rank-1 可分离时频 DM-RS LMMSE，目标 BLER 10%，连续演化轨迹含 240 预热 TB + 300 评估 TB（总时长约 1.35 s）。
-- **直观结论**：四条曲线在低 SNR 区呈清晰分层——在 −26 dB 处，全理想估计（`SRS ICE + DMRS ICE`，2.125 Mbps）较全实际估计（`SRS RCE + DMRS RCE`，1.667 Mbps）高出 **0.459 Mbps**，其中 DM-RS 估计误差贡献约 **0.299 Mbps**、SRS 估计误差贡献约 **0.144 Mbps**；随 SNR 升高，四条曲线逐步收敛并在 −4 dB 起共同达到 MCS 28 饱和吞吐量 **15.179 Mbps**。
+- **场景设定**：单 4 端口循环移位 SRS 资源（comb-2、4 连续重复符号、循环移位 `0/2/4/6`），按 `DSUDD` 每个 `S` 时隙发送一次（周期 5 个时隙 = 2.5 ms）；Rank-1 可分离时频 DM-RS LMMSE；目标 BLER 10%。连续演化轨迹包含 240 个预热 TB 和 300 个评估 TB（总时长约 1.35 s，对应 `seed=20261112` 的单个信道实现）。
+- **直观结论**：低 SNR 区四条曲线清晰分层。在 −26 dB 处，全理想估计（`SRS ICE + DMRS ICE`，2.125 Mbps）比全实际估计（`SRS RCE + DMRS RCE`，1.619 Mbps）高 **0.507 Mbps**，其中 DM-RS 估计误差约占 **0.299 Mbps**，SRS 估计误差约占 **0.178 Mbps**（配对 95% CI 均不含 0）。随 SNR 升高，四条曲线逐渐收敛，从 −4 dB 起都达到 MCS 28 的饱和吞吐量 **15.179 Mbps**。
 
 | 参考 SNR | SRS ICE + DMRS ICE | SRS RCE + DMRS ICE | SRS ICE + DMRS RCE | SRS RCE + DMRS RCE |
 | :---: | :---: | :---: | :---: | :---: |
-| **−26 dB** | 2.125 Mbps *(11.3%)* | 1.982 Mbps *(12.0%)* | 1.826 Mbps *(11.3%)* | 1.667 Mbps *(12.7%)* |
-| **−20 dB** | 4.845 Mbps *(11.3%)* | 4.802 Mbps *(11.3%)* | 4.639 Mbps *(11.3%)* | 4.583 Mbps *(11.3%)* |
-| **−12 dB** | 10.143 Mbps *(11.3%)* | 10.141 Mbps *(11.3%)* | 9.953 Mbps *(11.3%)* | 10.006 Mbps *(11.0%)* |
+| **−26 dB** | 2.125 Mbps *(11.3%)* | 1.947 Mbps *(12.0%)* | 1.826 Mbps *(11.3%)* | 1.619 Mbps *(12.7%)* |
+| **−20 dB** | 4.845 Mbps *(11.3%)* | 4.791 Mbps *(11.3%)* | 4.639 Mbps *(11.3%)* | 4.555 Mbps *(11.7%)* |
+| **−12 dB** | 10.143 Mbps *(11.3%)* | 10.143 Mbps *(11.3%)* | 9.953 Mbps *(11.3%)* | 9.953 Mbps *(11.3%)* |
 | **−4 / 0 dB** | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* |
 
 <details>
@@ -56,7 +56,7 @@ python run_ice_rce.py \
   --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json \
   --warmup-tb 240 --num-tb 300 \
   --channel-evolution continuous \
-  --workers 8
+  --workers 16
 ```
 
 </details>
@@ -69,14 +69,17 @@ python run_ice_rce.py \
   <img src="docs/figures/bler_waterfall_mcs_table1_continuous.png" alt="NR PUSCH BLER Waterfall | MCS Table 1 | Continuous CIR" width="98%">
 </p>
 
-- **场景设定**：逐档固定 MCS 0–28（覆盖 QPSK / 16-QAM / 64-QAM），在共享连续物理信道库上测量每点 **512 个连续 TB**（约 1.28 s 连续轨迹），启用 `--snr-step 0.25` 亚 dB 自适应加密（全表共实测 420 个 `(MCS, SNR)` 采样点），使用含噪单 4 端口 SRS 选择 TPMI + DM-RS LMMSE 估计，并标注每档首个零错块点的 95% 二项上界（$5.8\times 10^{-3}$，倒三角标记）。
-- **直观结论**：29 档曲线沿 SNR 平滑且单调有序排布，完整垂落至 $10^{-2}$ 乃至 $2\times 10^{-3}$ 量级（全部 29 档最低非零 BLER 均 $\le 2.7\%$），覆盖 −28.0 dB 到 −5.5 dB 超过 **22 dB** 的动态范围；得益于可分离时频 DM-RS LMMSE 消除幅度压缩，QPSK 顶档（MCS 9）与 16-QAM 首档（MCS 10）在 10% BLER 处仅相隔 **0.20 dB**，无传统 LS 估计常见的跨调制阶数反转。
+- **场景设定**：逐档固定 MCS 0–28（覆盖 QPSK / 16-QAM / 64-QAM），在共享连续物理信道库上每个点测量 **512 个连续 TB**（约 1.28 s 连续轨迹，单个信道实现）。启用 `--snr-step 0.25` 亚 dB 自适应加密，全表共实测 429 个 `(MCS, SNR)` 采样点。TPMI 由含噪单 4 端口 SRS（每 5 个时隙一次）选择，接收端用 DM-RS LMMSE 估计。每档首个零错块点标注 95% 二项上界（$5.8\times 10^{-3}$，倒三角标记）。
+- **直观结论**：29 档曲线沿 SNR 平滑、有序排布，10% BLER 拐点随 MCS 单调递增。所有曲线都完整垂落到 $10^{-2}$ 甚至 $2\times 10^{-3}$ 量级（全部 29 档的最低非零 BLER 都 $\le 2.9\%$），覆盖 −28.0 dB 到 −5.5 dB、超过 **22 dB** 的动态范围。由于可分离时频 DM-RS LMMSE 消除了幅度压缩，QPSK 最高档（MCS 9）与 16-QAM 最低档（MCS 10）在 10% BLER 处只相差 **0.22 dB**，没有出现 LS 估计常见的跨调制阶数反转。
 
 | 代表档位 | 调制方式 | TBS (bits) | 10% BLER 对应参考 SNR |
 | :---: | :---: | :---: | :---: |
-| **MCS 0 / 5 / 9** | QPSK | 1,672 / 5,120 / 9,224 | −27.95 / −24.37 / −20.84 dB |
-| **MCS 10 / 16** | 16-QAM | 9,224 / 17,928 | −20.64 / −15.79 dB |
-| **MCS 17 / 24 / 28** | 64-QAM | 17,928 / 31,240 / 37,896 | −15.18 / −9.11 / −5.52 dB |
+| **MCS 0 / 5 / 9** | QPSK | 1,672 / 5,120 / 9,224 | −28.04 / −24.37 / −20.89 dB |
+| **MCS 10 / 16** | 16-QAM | 9,224 / 17,928 | −20.67 / −15.79 dB |
+| **MCS 17 / 24 / 28** | 64-QAM | 17,928 / 31,240 / 37,896 | −15.18 / −9.12 / −5.52 dB |
+
+> [!NOTE]
+> 两张示例图都来自 `seed=20261112` 的单条连续信道轨迹，反映的是这一个小尺度实现。如需集合平均的结论，可用不同的 `--seed` 重复运行后汇总，详见文末「统计提示」。
 
 <details>
 <summary>点击展开：复现该图的完整命令（支持断点续算与亚 dB 自适应加密）</summary>
@@ -250,10 +253,12 @@ from pusch_baseline.srs import SrsEstimator
 cfg = load_config("pusch_baseline/configs/cdl_c_4t64r_codebooks.json")
 cfg = replace(cfg, adaptation=replace(cfg.adaptation, channel_evolution="continuous"))
 srs = SrsEstimator(4, cfg.carrier.n_size_grid, cfg.adaptation.srs_sequence_id, start_symbol=10)
-stream = SoundingChannel(cfg, None, srs)
+epochs = list(_sounding_epochs(cfg.adaptation, tb_limit=20))   # DSUDD: SRS 每 5 个时隙一次
+# total_slots 仅 custom 信道需要（预生成整条轨迹）；内置 CDL/TDL 为解析计算，可省略
+stream = SoundingChannel(cfg, None, srs, total_slots=epochs[-1][-1] + 1)
 rng = np.random.default_rng(cfg.sweep.seed)
 
-for epoch in _sounding_epochs(cfg.adaptation, tb_limit=20):
+for epoch in epochs:
     srs_slot = epoch[0]
     slots = stream.slots(tuple(s - srs_slot for s in epoch), start_slot=srs_slot)
     pilots = np.asarray(next(slots))                             # [RX, TX, 4, M_pilot]
@@ -315,7 +320,7 @@ write_results("results/custom_run", **run, metric="both")
     ├── mcs_waterfall.py          # 固定 MCS 曲线自适应加密采样
     ├── mcs_waterfall_plot.py     # 瀑布图绘制（PNG + PDF）
     ├── configs/                  # 7 套内置 JSON 场景配置
-    └── tests/                    # 86 项纯 Python 单元测试
+    └── tests/                    # 90 项纯 Python 单元测试
 ```
 
 ---
@@ -343,7 +348,7 @@ write_results("results/custom_run", **run, metric="both")
 | `pusch` | `num_antenna_ports`（1/2/4）、`rank`（1–4）、`precoding`（`codebook`/`non-codebook`）、`tpmi`、`mcs_table`（1/2/3）、`mcs_index`、`mapping_type`（A/B）、`symbol_allocation`、`dmrs` |
 | `channel` | `kind`（`awgn`/`tdl`/`cdl`/`custom`）、`profile`（A–E）、`delay_spread_ns`、`carrier_frequency_ghz`、`ue_speed_kmh`、`estimator`（`lmmse`/`ls`/`perfect`）、`normalize`、`ue_panel`、`bs_panel`、`ue_yaw_offsets_deg` |
 | `sweep` | `snr_db`、`num_tb_per_snr`、`batch_size`（固定授权用）、`seed`、`target_block_errors`、`min_tb_per_snr`、`ul_duty_cycle` |
-| `adaptation` | `tdd_pattern`（如 `DSUDD`）、`srs_period_slots`、`srs_start_symbol`、`srs_sequence_id`、`srs_estimator`（`real`/`perfect`）、`channel_evolution`（`per_period`/`continuous`）、`tx_power_mode`（`full_power`/`per_port`）、`rank_tpmi_candidates`、`mcs_indices`、`mcs_thresholds_db`、`sinr_margin_db`、`olla` |
+| `adaptation` | `tdd_pattern`（如 `DSUDD`）、`srs_period_slots`（TDD 下 SRS 在首个 `S` 时隙发送，之后每次取距上次 SRS **不少于** `srs_period_slots` 个时隙的首个 `S` 时隙；为 `S` 间隔整数倍时即 TS 38.211 的周期 $T_{\text{SRS}}$，例如 `DSUDD` + 5 → 每 5 个时隙一次）、`srs_start_symbol`、`srs_sequence_id`、`srs_estimator`（`real`/`perfect`）、`channel_evolution`（`per_period`/`continuous`）、`tx_power_mode`（`full_power`/`per_port`）、`rank_tpmi_candidates`、`mcs_indices`、`mcs_thresholds_db`、`sinr_margin_db`、`olla` |
 | `adaptation.olla` | `control`（`mcs_index`/`sinr_margin`）、`mcs_axis`（`ladder`/`index`）、`target_bler`、`tolerance`、`warmup_tb`、`window_tb`、`step_mcs`、`max_mcs_spread` |
 
 </details>
@@ -355,6 +360,8 @@ write_results("results/custom_run", **run, metric="both")
   - `full_power`（默认）：PUSCH 按 $1/\|W\|_F$ 归一化，所有 TPMI 总数据 RE 功率均为 1（对应 Rel-16 满功率能力）。
   - `per_port`：限制每个物理发射端口数据 RE 平均功率不超过 $1/N_{\text{TX}}$（对应 Rel-15 均分功放预算；4 端口 Rank 1 非相干/部分相干/全相干总功率分别为 0.25 / 0.5 / 1.0）。
   - 两种模式下，单 $N_{\text{TX}}$ 端口 SRS 资源均由全部端口同时发射，每端口活跃 RE 功率为 $1/N_{\text{TX}}$、全端口合计为 1。
+  - SRS 每个**活跃 RE** 的功率与 PUSCH 数据 RE 相同；comb-2 只占一半子载波，因此 SRS 符号总能量为 PUSCH 的一半。相对 38.213 等符号功率口径，SRS 的 RE 级 SNR 保守约 3 dB。
+- **SRS 时序**：TDD 下 SRS 位于 `S` 时隙末尾 `N_ap` 个符号（默认 10–13），按上表的 `srs_period_slots` 周期发送；探测结果假设在下一个 `U` 时隙前可用（未建模 $K_2/N_2$ 处理时延）。
 - **BLER 与吞吐量**：CRC 校验失败或译码比特与原始发射比特不一致均计为错块；TDD 墙钟吞吐量 `thp_wall_clock_mbps` 为正确译码净荷比特数除以包含全部 `D`、`S`、`U` 及空闲时隙在内的总物理时长（Mbps，无 HARQ 首传净吞吐量）。
 - **输出产物**：`THP_vs_SNR*.png` / `BLER_vs_SNR*.png`（及瀑布图 `.pdf`）、`results.csv`、`paired_differences.csv` / `throughput_differences.csv`、`summary.json`（含完整配置、逐 TTI 轨迹和信道 SHA-256 指纹）。
 
@@ -366,7 +373,7 @@ write_results("results/custom_run", **run, metric="both")
 python -m unittest discover -s pusch_baseline/tests -v
 ```
 
-全部 **86 项单元测试**（覆盖单多端口循环移位 SRS 正交性、与 Sionna 原生轨迹位级一致的 `ContinuousCir`、DM-RS LMMSE、低码率 RV0 编解码、在线 OLLA、三窗口稳定性、亚 dB 瀑布图网格/断点续算及 ICE/RCE 输出）均可在纯 Python 环境中独立运行。
+全部 **90 项单元测试**（覆盖单多端口循环移位 SRS 正交性、与 Sionna 原生轨迹位级一致的 `ContinuousCir`、DM-RS LMMSE、低码率 RV0 编解码、在线 OLLA、三窗口稳定性、亚 dB 瀑布图网格/断点续算及 ICE/RCE 输出）均可在纯 Python 环境中独立运行。
 
 ---
 
@@ -375,7 +382,7 @@ python -m unittest discover -s pusch_baseline/tests -v
 <details>
 <summary><b>Q1：是否需要安装 MATLAB 或 CUDA GPU？</b></summary>
 
-不需要。所有仿真脚本与 86 项单元测试均为纯 Python 运行，不依赖 MATLAB 工具箱；在无 GPU 的多核 CPU 机器上即可运行，通过 `--workers N` 即可自动分配多进程与 TensorFlow/BLAS 线程。
+不需要。所有仿真脚本与 90 项单元测试均为纯 Python 运行，不依赖 MATLAB 工具箱；在无 GPU 的多核 CPU 机器上即可运行，通过 `--workers N` 即可自动分配多进程与 TensorFlow/BLAS 线程。
 
 </details>
 
@@ -407,5 +414,7 @@ python -m unittest discover -s pusch_baseline/tests -v
 
 - **覆盖范围**：单 UE、连续频域 PRB 分配、常规 CP、符号 0 起始的 Mapping Type A/B、CP-OFDM、单 TB/调度时隙、首传净吞吐量。
 - **范围之外**：DFT-s-OFDM、跳频、HARQ 软合并、UCI 复用、多用户 MIMO 调度、大尺度路损/阴影衰落、射频损伤。
-- **统计提示**：在 `channel_evolution="continuous"` 模式下，相邻 SRS 周期存在时间相关，按 SRS 周期重采样的 95% bootstrap 区间反映的是当前连续轨迹上的观测波动；两种模式下均假设 SRS 探测结果在下一个 `U` 槽前送达（未额外建模 $K_2/N_2$ 调度时延）。
+- **统计提示**：
+  - `channel_evolution="continuous"` 时，CDL/TDL 的 drop 级随机量（射线耦合、初始相位、移动方向）在整条轨迹上只抽取一次，因此一次运行对应**单个小尺度信道实现**（由 `sweep.seed` 决定）。要得到集合平均结论，请用多个 `--seed`/`sweep.seed` 重复运行后汇总。
+  - 相邻 SRS 周期在连续模式下时间相关，按 SRS 周期重采样的 95% bootstrap 区间只反映当前轨迹上的观测波动，会偏窄。
 - **参考标准**：[3GPP TS 38.211](https://www.3gpp.org/dynareport/38211.htm) · [TS 38.212](https://www.3gpp.org/dynareport/38212.htm) · [TS 38.213](https://www.3gpp.org/dynareport/38213.htm) · [TS 38.214](https://www.3gpp.org/dynareport/38214.htm) · [TR 38.901](https://www.3gpp.org/dynareport/38901.htm) · [Sionna 1.2.2 PUSCH 教程](https://nvlabs.github.io/sionna/v1.2.2/phy/tutorials/5G_NR_PUSCH.html)。

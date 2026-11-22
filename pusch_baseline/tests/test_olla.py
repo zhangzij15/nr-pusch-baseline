@@ -103,6 +103,16 @@ class OllaSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "target_block_errors"):
             cfg.validate()
 
+    def test_fit_budget_shrinks_windows_for_short_overrides(self):
+        gated = OllaSettings(warmup_tb=500, window_tb=120, max_mcs_spread=1.5)
+        # Only the evaluation budget changes: three windows must still fit into 60 TBs.
+        self.assertEqual(gated.fit_budget(60), replace(gated, window_tb=20))
+        self.assertEqual(gated.fit_budget(300, warmup_tb=240), replace(gated, warmup_tb=240, window_tb=80))
+        gated.fit_budget(60).validate()
+        plain = OllaSettings(warmup_tb=100, window_tb=40)
+        self.assertEqual(plain.fit_budget(10, warmup_tb=30), replace(plain, warmup_tb=30, window_tb=30))
+        self.assertEqual(plain.fit_budget(10), plain)
+
 
 if __name__ == "__main__":
     unittest.main()

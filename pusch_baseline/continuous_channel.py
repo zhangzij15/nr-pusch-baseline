@@ -129,6 +129,12 @@ class ContinuousCir:
             finally:
                 self._rng.reset(caller_state)
         path_gains, delays = self._cached_custom
+        available = int(path_gains.shape[-1])
+        if int(tf.reduce_max(indices).numpy()) >= available:
+            raise ValueError(
+                f"Custom continuous CIR holds {available} OFDM symbols; pass total_slots to "
+                "SoundingChannel (or total_symbols to ContinuousCir) to cover the whole timeline"
+            )
         return tf.gather(path_gains, indices, axis=-1), delays
 
     def _sample_tdl(self, indices, sampling_frequency: float):

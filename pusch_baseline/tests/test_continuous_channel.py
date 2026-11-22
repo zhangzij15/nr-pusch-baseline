@@ -143,9 +143,37 @@ class ContinuousChannelTests(unittest.TestCase):
         self.assertEqual(len(seen_calls), 1)
         self.assertEqual(runs["full"]["metadata"]["adaptation"]["channel_evolution"], "continuous")
         full_point, = runs["full"]["points"]
-        # Measurement epoch 0 is at physical slot 11 (< 20 -> port 0, TPMI 0); epoch 1 at slot 21 (>= 20 -> port 3, TPMI 3).
-        self.assertEqual([g["tpmi"] for g in full_point["srs_grants"]], [0, 3])
+        # Warmup sounds at slots 1 and 6, so measurement starts at physical slot 11 and sounds
+        # every 5 slots: 11, 16 (< 20 -> port 0, TPMI 0) and 21, 26 (>= 20 -> port 3, TPMI 3).
+        self.assertEqual([g["tpmi"] for g in full_point["srs_grants"]], [0, 0, 3, 3])
         self.assertEqual(full_point["tb_errors"], 0)
+
+    def test_custom_continuous_cir_reports_an_uncovered_timeline(self):
+        base = SimulationConfig()
+        cfg = replace(
+            base,
+            carrier=replace(base.carrier, n_size_grid=8),
+            pusch=replace(base.pusch, num_antenna_ports=4, precoding="codebook"),
+            channel=replace(base.channel, kind="custom", normalize=False, estimator="perfect"),
+            adaptation=AdaptationSettings(
+                tdd_pattern="DSUDD", srs_period_slots=5, srs_start_symbol=10, channel_evolution="continuous",
+            ),
+        )
+
+        def factory(_cfg, _grid):
+            def cir(batch_size, num_time_steps, _fs):
+                return tf.ones((batch_size, 1, 1, 1, 4, 1, num_time_steps), tf.complex64), tf.zeros((1, 1, 1, 1))
+
+            return cir
+
+        est = SrsEstimator(4, 8, 0, start_symbol=10)
+        covered = SoundingChannel(cfg, factory, est, total_slots=12)
+        for start in (1, 6):
+            self.assertEqual(len(list(covered.slots((0, 1), start_slot=start))), 2)
+        uncovered = SoundingChannel(cfg, factory, est)
+        list(uncovered.slots((0, 1), start_slot=1))
+        with self.assertRaisesRegex(ValueError, "total_slots"):
+            list(uncovered.slots((0, 1), start_slot=6))
 
     def test_continuous_normalize_holds_single_drop_rms_across_periods(self):
         base = SimulationConfig()

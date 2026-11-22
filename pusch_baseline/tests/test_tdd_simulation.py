@@ -54,13 +54,14 @@ class TddSimulationTests(unittest.TestCase):
         result = simulate(self.config, channel_model_factory=factory)
         point, = result["points"]
 
+        # srs_period_slots=5 sounds every S slot of DSUDD, once per 5-slot period.
         indicated = point["srs_grants"]
-        self.assertEqual([grant["slot_index"] for grant in indicated], [1, 11, 21])
-        self.assertEqual([grant["tpmi"] for grant in indicated], [0, 3, 0])
+        self.assertEqual([grant["slot_index"] for grant in indicated], [1, 6, 11, 16, 21])
+        self.assertEqual([grant["tpmi"] for grant in indicated], [0, 3, 0, 3, 0])
         self.assertTrue(all(isfinite(grant["effective_sinr_db"]) for grant in indicated))
         self.assertEqual((point["num_tb"], point["num_srs_slots"], point["num_slots"]),
-                         (5, 3, 23))
-        self.assertEqual(point["num_idle_slots"], 15)
+                         (5, 5, 23))
+        self.assertEqual(point["num_idle_slots"], 13)
         self.assertEqual(point["tb_errors"], 0)
         self.assertEqual({grant["tpmi"]: grant["num_tb"] for grant in point["grant_counts"]},
                          {0: 3, 3: 2})
@@ -68,15 +69,15 @@ class TddSimulationTests(unittest.TestCase):
                                point["thp_scheduled_mbps"] * 5 / 23)
         self.assertEqual(point["thp_wall_clock_mbps"], point["thp_including_srs_mbps"])
         clusters = point["throughput_srs_clusters"]
-        self.assertEqual([cluster["srs_slot_index"] for cluster in clusters], [1, 11, 21])
-        self.assertEqual([cluster["num_slots"] for cluster in clusters], [11, 10, 2])
+        self.assertEqual([cluster["srs_slot_index"] for cluster in clusters], [1, 6, 11, 16, 21])
+        self.assertEqual([cluster["num_slots"] for cluster in clusters], [6, 5, 5, 5, 2])
         self.assertEqual(sum(cluster["delivered_payload_bits"] for cluster in clusters),
                          point["delivered_payload_bits"])
-        self.assertEqual(point["throughput_ci95_num_clusters"], 3)
+        self.assertEqual(point["throughput_ci95_num_clusters"], 5)
         low, high = point["throughput_ci95_mbps"]
         self.assertLess(low, point["thp_wall_clock_mbps"])
         self.assertGreater(high, point["thp_wall_clock_mbps"])
-        self.assertEqual(cir_lengths, [98, 98, 28])
+        self.assertEqual(cir_lengths, [28] * 5)
         self.assertEqual(result["metadata"]["adaptation"]["srs_sounded_prbs"], 8)
         self.assertEqual(result["metadata"]["adaptation"]["srs_symbols"], (10, 11, 12, 13))
         self.assertEqual(result["metadata"]["adaptation"]["srs_cyclic_shifts"], (0, 2, 4, 6))
@@ -107,7 +108,8 @@ class TddSimulationTests(unittest.TestCase):
         result = simulate(ideal_cfg, channel_model_factory=factory)
         point, = result["points"]
         self.assertEqual(result["metadata"]["adaptation"]["srs_estimator"], "perfect")
-        self.assertEqual([grant["tpmi"] for grant in point["srs_grants"]], [3])
+        # Two TBs on DSUDD with a 5-slot period use two SRS epochs.
+        self.assertEqual([grant["tpmi"] for grant in point["srs_grants"]], [3, 3])
 
     def test_tdd_validation_rejects_missing_slots_partial_band_or_double_duty(self):
         config = self.config

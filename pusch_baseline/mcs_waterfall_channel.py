@@ -69,7 +69,8 @@ def write_channel_bank(cfg, snrs, num_tb, directory, *, on_progress=None):
     sionna_config.seed = cfg.sweep.seed
     epochs = list(_sounding_epochs(settings, num_tb))
     total_slots = epochs[-1][-1] + 1
-    channel = SoundingChannel(cfg, None, estimator, total_slots=total_slots)
+    srs_ideal = settings.srs_estimator == "perfect"
+    channel = SoundingChannel(cfg, None, estimator, full_sounding_grid=srs_ideal, total_slots=total_slots)
     srs_noise = np.random.default_rng(cfg.sweep.seed)
     slots_per_frame = 10 * cfg.carrier.subcarrier_spacing_khz // 15
 
@@ -80,13 +81,16 @@ def write_channel_bank(cfg, snrs, num_tb, directory, *, on_progress=None):
         responses = channel.slots(tuple(slot - pilot_slot for slot in epoch), start_slot=pilot_slot)
         sounding = np.ascontiguousarray(next(responses))
         digest.update(memoryview(sounding).cast("B"))
+        # Draw the SRS noise seed in both modes so real and ideal banks stay paired.
         srs_seed = int(srs_noise.integers(0, 2**32))
         selected = np.empty((len(snrs), grant.num_antenna_ports), dtype=dtype)
         for snr_index, noise in enumerate(noise_variance):
-            estimate = estimator.estimate_from_pilots(sounding, float(noise), np.random.default_rng(srs_seed))
+            estimate = sounding if srs_ideal else estimator.estimate_from_pilots(
+                sounding, float(noise), np.random.default_rng(srs_seed),
+            )
             key, _ = select_grants(
                 estimate, float(noise), candidates, None, 0.0, {None: candidates},
-                srs_error_variance=srs_error_variances[snr_index],
+                srs_error_variance=None if srs_ideal else srs_error_variances[snr_index],
             )[None]
             selected[snr_index] = candidates[key][0][:, 0]
 
@@ -113,13 +117,15 @@ def write_channel_bank(cfg, snrs, num_tb, directory, *, on_progress=None):
         "seed": cfg.sweep.seed,
         "num_tpmi_candidates": len(candidates),
         "tx_power_mode": settings.tx_power_mode,
+        "srs_estimator": settings.srs_estimator,
         "srs_power_per_active_re": estimator.power_per_active_re,
         "mean_data_re_tx_power": (1.0 if settings.tx_power_mode == "full_power" else
                                   float(np.mean(np.sum(np.abs(weights)**2, axis=-1)))),
         "ue_yaw_offsets_deg": list(cfg.channel.ue_yaw_offsets_deg),
         "physical_sha256": digest.hexdigest(),
         "physical_sha256_definition": (
-            "C-order complex bytes of each epoch's raw SRS pilot CFR followed "
+            "C-order complex bytes of each epoch's SRS observation (raw pilot CFR, or the "
+            "full-band CFR averaged over SRS symbols for an ideal SRS estimator) followed "
             "by full PUSCH slot CFRs, in physical-slot order"
         ),
     }

@@ -27,10 +27,12 @@ class WaterfallResumeTests(unittest.TestCase):
     def test_legacy_bank_matches_unchanged_scaling_and_fingerprint(self):
         legacy = {"physical_sha256": "original", "mean_data_re_tx_power": 1.0}
         current = {
-            **legacy, "tx_power_mode": "full_power", "ue_yaw_offsets_deg": [], "srs_power_per_active_re": 1.0,
+            **legacy, "tx_power_mode": "full_power", "srs_estimator": "real",
+            "ue_yaw_offsets_deg": [], "srs_power_per_active_re": 1.0,
         }
         self.assertEqual(_restore_legacy_bank_defaults(legacy), current)
         self.assertNotEqual(_restore_legacy_bank_defaults(legacy), {**current, "tx_power_mode": "per_port"})
+        self.assertNotEqual(_restore_legacy_bank_defaults(legacy), {**current, "srs_estimator": "perfect"})
         self.assertNotEqual(_restore_legacy_bank_defaults(legacy), {**current, "physical_sha256": "different"})
 
     def test_waterfall_snr_grid_supports_power_of_two_sub_db_steps(self):

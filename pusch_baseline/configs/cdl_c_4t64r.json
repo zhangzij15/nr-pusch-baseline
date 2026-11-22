@@ -1,0 +1,31 @@
+{
+  "carrier": {"subcarrier_spacing_khz": 30, "n_size_grid": 51},
+  "pusch": {
+    "num_antenna_ports": 4,
+    "rank": 1,
+    "precoding": "codebook",
+    "tpmi": 12,
+    "mcs_table": 1,
+    "mcs_index": 14,
+    "dmrs": {"config_type": 1, "length": 1, "additional_position": 1}
+  },
+  "channel": {
+    "kind": "cdl",
+    "profile": "C",
+    "delay_spread_ns": 100,
+    "carrier_frequency_ghz": 6.7,
+    "ue_speed_kmh": 3,
+    "estimator": "ls",
+    "normalize": false,
+    "ue_panel": {"rows": 2, "cols": 2, "pattern": "omni"},
+    "bs_panel": {
+      "rows": 8,
+      "cols": 8,
+      "pattern": "38.901",
+      "horizontal_spacing_lambda": 0.5,
+      "vertical_spacing_lambda": 1.5,
+      "orientation_deg": [0, 10, 0]
+    }
+  },
+  "sweep": {"snr_db": [-24, -20, -16, -12, -8, -4, 0], "num_tb_per_snr": 50, "batch_size": 1}
+}

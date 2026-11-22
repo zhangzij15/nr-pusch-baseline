@@ -1,0 +1,31 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and build outputs
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Simulation outputs, datasets, and temporary files
+results/
+pusch_baseline/results/
+*.npy
+*.npz
+*.tmp
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

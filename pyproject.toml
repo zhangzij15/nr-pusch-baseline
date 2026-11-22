@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pusch-baseline"
+version = "0.1.0"
+description = "Single-UE 5G NR CP-OFDM PUSCH link-level simulator on Sionna 1.2.2 with single multi-port cyclic-shift SRS, DM-RS LMMSE, continuous CIR evolution, and closed-loop MCS/OLLA adaptation."
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+keywords = [
+    "5G-NR",
+    "PUSCH",
+    "Sionna",
+    "SRS",
+    "DMRS",
+    "LMMSE",
+    "link-level-simulation",
+    "channel-prediction",
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "sionna-no-rt==1.2.2",
+    "tensorflow==2.19.0",
+    "numpy==2.1.3",
+    "scipy==1.15.3",
+    "matplotlib==3.10.9",
+]
+
+[project.scripts]
+pusch-baseline = "pusch_baseline.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/zhangzij15/nr-pusch-baseline"
+
+[tool.setuptools.packages.find]
+include = ["pusch_baseline*"]
+exclude = ["pusch_baseline.tests*"]
+
+[tool.setuptools.package-data]
+pusch_baseline = ["configs/*.json"]

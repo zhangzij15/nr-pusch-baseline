@@ -1,0 +1,40 @@
+{
+  "carrier": {"subcarrier_spacing_khz": 30, "n_size_grid": 48},
+  "pusch": {
+    "num_antenna_ports": 4,
+    "rank": 1,
+    "precoding": "codebook",
+    "tpmi": 12,
+    "mcs_table": 1,
+    "mcs_index": 14,
+    "dmrs": {"config_type": 1, "length": 1, "additional_position": 1}
+  },
+  "channel": {
+    "kind": "cdl",
+    "profile": "C",
+    "delay_spread_ns": 100,
+    "carrier_frequency_ghz": 6.7,
+    "ue_speed_kmh": 3,
+    "estimator": "ls",
+    "normalize": false,
+    "ue_panel": {"rows": 2, "cols": 2, "pattern": "omni"},
+    "bs_panel": {
+      "rows": 8,
+      "cols": 8,
+      "pattern": "38.901",
+      "horizontal_spacing_lambda": 0.5,
+      "vertical_spacing_lambda": 1.5,
+      "orientation_deg": [0, 10, 0]
+    }
+  },
+  "sweep": {"snr_db": [-24, -20, -16, -12, -8, -4, 0], "num_tb_per_snr": 24, "batch_size": 1},
+  "adaptation": {
+    "tdd_pattern": "DSUDD",
+    "srs_period_slots": 5,
+    "srs_start_symbol": 10,
+    "srs_sequence_id": 1,
+    "rank_tpmi_candidates": [[1, 12], [1, 13], [1, 14], [2, 0], [2, 1]],
+    "mcs_thresholds_db": [[5, 2.0], [9, 6.0], [14, 10.0]],
+    "sinr_margin_db": 1.0
+  }
+}

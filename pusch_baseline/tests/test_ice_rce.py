@@ -71,6 +71,31 @@ class IceRceComparisonTests(unittest.TestCase):
             for name in ("THP_vs_SNR_ice_rce.png", "BLER_vs_SNR_ice_rce.png"):
                 self.assertEqual((out / name).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
+    def test_merge_variant_shards_validates_cross_snr_metadata(self):
+        from run_ice_rce import _merge_variant_shards
+
+        snrs = (-20.0, -12.0)
+        shards = {}
+        for key, _, srs_e, dmrs_e in VARIANTS:
+            shards[key] = {
+                snr: {
+                    "config": {"sweep": {"snr_db": [snr]}},
+                    "metadata": {"srs": srs_e, "dmrs": dmrs_e, "channel_sha256": "abc123"},
+                    "points": [{"snr_db": snr, "bler": 0.1}],
+                }
+                for snr in snrs
+            }
+        merged = _merge_variant_shards(shards, snrs)
+        self.assertEqual(merged["srs_ice_dmrs_ice"]["config"]["sweep"]["snr_db"], [-20.0, -12.0])
+        self.assertEqual(merged["srs_ice_dmrs_ice"]["metadata"]["variant_label"], "SRS ICE + DMRS ICE")
+        self.assertNotIn("variant_label", shards["srs_ice_dmrs_ice"][-20.0]["metadata"])
+
+        shards["srs_rce_dmrs_rce"][-12.0]["metadata"] = {
+            "srs": "real", "dmrs": "lmmse", "channel_sha256": "mismatch",
+        }
+        with self.assertRaisesRegex(RuntimeError, "Inconsistent metadata or channel fingerprints"):
+            _merge_variant_shards(shards, snrs)
+
 
 if __name__ == "__main__":
     unittest.main()

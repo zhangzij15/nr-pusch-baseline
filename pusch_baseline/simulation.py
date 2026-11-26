@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import os
 from typing import Any
 
 from .config import SimulationConfig
@@ -14,6 +15,47 @@ from .outputs import summarize_point
 # coherence subset uses a prefix of the corresponding 38.212 DCI table.
 _CODEBOOK_SIZES = {1: (28, 12, 4), 2: (22, 14, 6), 3: (7, 3, 1), 4: (5, 3, 1)}
 _CODEBOOK_NAMES = ("full", "partial_noncoherent", "noncoherent")
+
+
+def configure_worker_env(
+    workers: int = 1,
+    *,
+    intra_threads: int | None = None,
+    inter_threads: int | None = None,
+) -> None:
+    """Populate runtime logging and thread-count environment defaults before TF init."""
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    default_intra = min(os.cpu_count() or 1, 2 if workers > 1 else 4)
+    default_inter = 1 if workers > 1 else 2
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(default_intra if intra_threads is None else intra_threads))
+    os.environ.setdefault("TF_NUM_INTEROP_THREADS", str(default_inter if inter_threads is None else inter_threads))
+    if workers > 1:
+        for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(name, "1")
+
+
+def apply_tensorflow_threads() -> None:
+    """Apply TF_NUM_INTRAOP_THREADS and TF_NUM_INTEROP_THREADS if set."""
+    intra = os.environ.get("TF_NUM_INTRAOP_THREADS")
+    inter = os.environ.get("TF_NUM_INTEROP_THREADS")
+    if intra is None and inter is None:
+        return
+    intra_val = int(intra) if intra is not None else None
+    inter_val = int(inter) if inter is not None else None
+    if (intra_val is not None and intra_val < 1) or (inter_val is not None and inter_val < 1):
+        raise ValueError("TF_NUM_INTRAOP_THREADS and TF_NUM_INTEROP_THREADS must be positive integers")
+    import tensorflow as tf
+
+    try:
+        if intra_val is not None:
+            tf.config.threading.set_intra_op_parallelism_threads(intra_val)
+        if inter_val is not None:
+            tf.config.threading.set_inter_op_parallelism_threads(inter_val)
+    except RuntimeError:
+        # TensorFlow's execution context was already initialized in this process.
+        pass
 
 
 def simulate(
@@ -57,9 +99,10 @@ def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progre
         raise ValueError('Provide channel_model_factory exactly when channel.kind is "custom".')
 
     try:
+        import tensorflow as tf
+        apply_tensorflow_threads()
         import sionna
         import sionna.phy
-        import tensorflow as tf
     except ImportError as exc:
         raise RuntimeError("Sionna PHY and TensorFlow are required. See requirements.txt.") from exc
     if sionna.__version__ != "1.2.2":
@@ -89,7 +132,7 @@ def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progre
             cfg, metadata, channel_model_factory, on_point, codebooks=codebooks, on_progress=on_progress,
         )
 
-    link = PuschLink(cfg, channel_model_factory)
+    link = PuschLink(cfg, channel_model_factory, allow_low_rate=True)
     points = []
     for snr_db in sweep.snr_db:
         link.rewind_channel()

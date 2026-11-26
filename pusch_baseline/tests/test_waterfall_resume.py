@@ -43,3 +43,45 @@ class WaterfallResumeTests(unittest.TestCase):
         self.assertEqual((grid[0], grid[1], grid[-1], len(grid)), (-36.0, -35.75, 12.0, 193))
         with self.assertRaises(ValueError):
             waterfall_snr_grid(0.3)
+
+    def test_fixed_grid_supports_partial_mcs_subsets_and_rejects_missing_rows(self):
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from run_mcs_waterfall import _load_fixed_grid
+
+        partial = {
+            "points": [
+                {"mcs_index": 9, "snr_db": -20.0},
+                {"mcs_index": 9, "snr_db": -22.0},
+                {"mcs_index": 10, "snr_db": -19.0},
+            ],
+        }
+        with TemporaryDirectory() as temp:
+            summary_path = Path(temp) / "summary.json"
+            summary_path.write_text(json.dumps(partial), encoding="utf-8")
+            self.assertEqual(
+                _load_fixed_grid(summary_path, required=(9, 10)),
+                {9: (-22.0, -20.0), 10: (-19.0,)},
+            )
+            with self.assertRaisesRegex(ValueError, "missing requested MCS"):
+                _load_fixed_grid(summary_path, required=(9, 11))
+            with self.assertRaisesRegex(ValueError, "all 29 MCS rows"):
+                _load_fixed_grid(summary_path)
+
+    def test_tpmi_policy_reflects_srs_estimator_and_candidate_subset(self):
+        from run_mcs_waterfall import _tpmi_policy
+
+        self.assertEqual(
+            _tpmi_policy({"srs_estimator": "real", "num_tpmi_candidates": 28}),
+            "noisy SRS selects from the full set of rank-one codebook precoders",
+        )
+        self.assertEqual(
+            _tpmi_policy({"srs_estimator": "perfect", "num_tpmi_candidates": 28}),
+            "ideal noise-free SRS selects from the full set of rank-one codebook precoders",
+        )
+        self.assertEqual(
+            _tpmi_policy({"srs_estimator": "real", "num_tpmi_candidates": 4, "tpmi_candidates": [0, 1, 2, 3]}),
+            "noisy SRS selects from 4 configured rank-one codebook precoder(s)",
+        )

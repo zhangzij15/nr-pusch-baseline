@@ -45,8 +45,14 @@ def write_channel_bank(cfg, snrs, num_tb, directory, *, on_progress=None):
         power_per_active_re=1.0,
     )
     srs_error_variances = [estimator.error_variance(float(noise)) for noise in noise_variance]
+    if settings.rank_tpmi_candidates is None:
+        tpmis = tuple(range(_CODEBOOK_SIZES[1][0]))
+    else:
+        if any(rank != 1 for rank, _ in settings.rank_tpmi_candidates):
+            raise ValueError("The channel bank only supports Rank 1 adaptation.rank_tpmi_candidates")
+        tpmis = tuple(tpmi for _, tpmi in settings.rank_tpmi_candidates)
     candidates = {}
-    for tpmi in range(_CODEBOOK_SIZES[1][0]):
+    for tpmi in tpmis:
         pusch = _pusch_config(replace(cfg, pusch=replace(grant, tpmi=tpmi)))
         matrix = pusch.precoding_matrix
         scale = precoder_amplitude_scale(matrix, grant.num_antenna_ports, settings.tx_power_mode)
@@ -116,6 +122,7 @@ def write_channel_bank(cfg, snrs, num_tb, directory, *, on_progress=None):
         "dtype": dtype.name,
         "seed": cfg.sweep.seed,
         "num_tpmi_candidates": len(candidates),
+        **({"tpmi_candidates": list(tpmis)} if settings.rank_tpmi_candidates is not None else {}),
         "tx_power_mode": settings.tx_power_mode,
         "srs_estimator": settings.srs_estimator,
         "srs_power_per_active_re": estimator.power_per_active_re,

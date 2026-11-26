@@ -273,7 +273,7 @@ class PuschLink:
     """Single-UE transmitter, channel and receiver for a fixed PUSCH grant."""
 
     def __init__(self, cfg: SimulationConfig, channel_model_factory=None, *,
-                 external_channel=False, tb_decoder_cache=None, allow_low_rate=False):
+                 external_channel=False, tb_decoder_cache=None, allow_low_rate=True):
         pc = _pusch_config(cfg)
         rate_plan = low_rate_plan(pc) if allow_low_rate else None
         tx_config = pc

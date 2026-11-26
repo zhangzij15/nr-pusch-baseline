@@ -8,14 +8,13 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from io import BytesIO
 import json
-import os
 from pathlib import Path
 import sys
 
 from pusch_baseline import load_config, simulate
 from pusch_baseline.__main__ import _parse_snr
 from pusch_baseline.outputs import _observed_throughput_field, _plot_bler_targets, write_csv
-from pusch_baseline.simulation import _CODEBOOK_SIZES
+from pusch_baseline.simulation import _CODEBOOK_SIZES, configure_worker_env
 from pusch_baseline.throughput_statistics import paired_throughput_differences
 
 
@@ -39,13 +38,23 @@ _STYLES = {
 }
 
 
-def _configure_worker_env(workers: int) -> None:
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-    os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(min(os.cpu_count() or 1, 2 if workers > 1 else 4)))
-    os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1" if workers > 1 else "2")
-    if workers > 1:
-        for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-            os.environ.setdefault(name, "1")
+def _merge_variant_shards(shards: dict[str, dict[float, dict]], snrs) -> dict[str, dict]:
+    snr_list = list(snrs)
+    runs = {}
+    for key, label, *_ in VARIANTS:
+        first = shards[key][snr_list[0]]
+        base_metadata = first["metadata"]
+        if any(shards[key][snr]["metadata"] != base_metadata for snr in snr_list):
+            raise RuntimeError(f"Inconsistent metadata or channel fingerprints in {key} SNR shards")
+        runs[key] = {
+            "config": {
+                **first["config"],
+                "sweep": {**first["config"]["sweep"], "snr_db": snr_list},
+            },
+            "metadata": {**base_metadata, "variant_label": label},
+            "points": [shards[key][snr]["points"][0] for snr in snr_list],
+        }
+    return runs
 
 
 def _run_shard(cfg, variant_key: str, srs_est: str, dmrs_est: str, snr_db: float):
@@ -258,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         if output_dir.exists():
             raise FileExistsError(f"Output directory already exists: {output_dir}")
 
-        _configure_worker_env(args.workers)
+        configure_worker_env(args.workers)
         tasks = [(key, srs_e, dmrs_e, snr) for key, _, srs_e, dmrs_e in VARIANTS for snr in snrs]
         shards = {key: {} for key, *_ in VARIANTS}
         print(f"Running {len(tasks)} paired (variant, SNR) shards with {args.workers} worker(s)...", flush=True)
@@ -282,13 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                           f"BLER {p['bler']:.3f} ({p['tb_errors']}/{p['num_tb']}) | "
                           f"THP {p[_observed_throughput_field([p])]:.3f} Mbps", flush=True)
 
-        runs = {}
-        for key, label, *_ in VARIANTS:
-            combined = shards[key][snrs[0]]
-            combined["config"]["sweep"]["snr_db"] = list(snrs)
-            combined["points"] = [shards[key][snr]["points"][0] for snr in snrs]
-            combined["metadata"]["variant_label"] = label
-            runs[key] = combined
+        runs = _merge_variant_shards(shards, snrs)
 
         saved_dir = write_ice_rce_comparison(output_dir, runs)
         print(f"Saved {saved_dir.resolve()}")

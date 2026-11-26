@@ -236,7 +236,7 @@ python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_dsudd.json 
 | `--config PATH` | 全部脚本 | 指定 JSON 场景配置文件 |
 | `--output-dir PATH` | 全部脚本 | 指定结果保存目录（除瀑布图续跑外须为新目录） |
 | `--snr` / `--snr-db` | 全部脚本 | 覆盖信噪比列表，负数开头需用等号（如 `--snr=-20,-12,-4`） |
-| `--warmup-tb` / `--num-tb` | `run_uplink` / `run_ice_rce` | 覆盖预热 / 评估传输块数量；长配置下会自动收紧统计窗口防报错 |
+| `--num-tb` / `--warmup-tb` | 全部脚本（`--warmup-tb` 限含 OLLA 脚本） | 覆盖评估 / 预热传输块数量；长配置下会自动收紧统计窗口防报错 |
 | `--channel-evolution` | 三个 `run_*.py` | 选 `per_period`（每周期独立刷新信道）或 `continuous`（连续移动轨迹） |
 | `--tx-power-mode` | `run_uplink` / `run_ice_rce` | 选 `full_power`（Rel-16 满功率）或 `per_port`（Rel-15 单端口功率上限） |
 | `--ue-yaw-offsets` | `run_uplink` / `run_ice_rce` | CDL 终端随机方位角偏移列表（单位：度） |
@@ -379,8 +379,8 @@ write_results("results/custom_run", **run, metric="both")
 
 ### 关键物理口径与输出文件
 
-- **参考 SNR**：指终端单个数据子载波（RE）的总发射功率预算（固定为 1，预编码和过信道之前）与基站单根接收天线噪声方差的比值，即 $\sigma_n^2 = 10^{-\mathrm{SNR}_{\mathrm{dB}}/10}$ 。由于不含基站 64 天线的合并增益（约 18 dB）和 38.901 天线方向图增益，4T64R 场景的有效工作点会落在负参考 SNR 区间。
-- **发射功率模式**：
+- **参考 SNR**：噪声方差固定按 $\sigma_n^2 = 10^{-\mathrm{SNR}_{\mathrm{dB}}/10}$ 取于基站单根接收天线每复数 RE。在自适应、码本对比与瀑布图模式下，参考信号功率对应终端单个数据 RE 的总发射功率预算（固定为 1，预编码和过信道之前）；在固定授权模式（无 `adaptation`）下，则沿用 Sionna 原生约定（每层 QAM 符号平均能量为 1 后直接乘 38.211 预编码矩阵 $W$ ，实际总数据 RE 发射功率 $\lVert W \rVert_F^2$ 记录于 `metadata.pusch.effective_tx_data_re_power`，对内置 `awgn_siso`、`tdl_2x2` 和 `cdl_c_4t64r` 均恰好为 1）。由于不含基站 64 天线的合并增益（约 18 dB）和 38.901 天线方向图增益，4T64R 场景的有效工作点会落在负参考 SNR 区间。
+- **发射功率模式（自适应模式）**：
   - `full_power`（默认）：PUSCH 预编码矩阵按 $1 / \lVert W \rVert_F$ 归一化，无论选哪个 TPMI，发射端总功率都保持为 1（对应 Rel-16 满功率终端）。
   - `per_port`：限制每根发射天线的平均功率不超过 $1 / N_{\mathrm{TX}}$ （对应 Rel-15 各端口均分功放预算；4 端口单流下非相干 / 部分相干 / 全相干的总功率分别为 0.25 / 0.5 / 1.0）。
   - 两种模式下，多端口 SRS 都由全部 $N_{\mathrm{TX}}$ 根天线同时发射，每根天线在活跃 RE 上的功率为 $1 / N_{\mathrm{TX}}$ ，总活跃 RE 功率为 1。

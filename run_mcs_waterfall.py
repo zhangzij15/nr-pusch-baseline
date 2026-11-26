@@ -9,7 +9,6 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from math import isfinite
-import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -22,6 +21,9 @@ MCS_ROWS = tuple(range(29))
 
 
 def _run_curve(config, bank, mcs, batch_size, fixed_snrs, directory, min_snr_step=1.0):
+    from pusch_baseline.simulation import apply_tensorflow_threads
+
+    apply_tensorflow_threads()
     from pusch_baseline.mcs_waterfall import simulate_mcs_curve
 
     point_files = directory / f"{mcs:02d}"
@@ -42,7 +44,7 @@ def _run_curve(config, bank, mcs, batch_size, fixed_snrs, directory, min_snr_ste
     )
 
 
-def _load_fixed_grid(summary_path):
+def _load_fixed_grid(summary_path, required=MCS_ROWS):
     data = json.loads(summary_path.read_text(encoding="utf-8"))
     points = {mcs: set() for mcs in MCS_ROWS}
     for point in data["points"]:
@@ -51,9 +53,13 @@ def _load_fixed_grid(summary_path):
         if mcs not in points or not isfinite(snr) or snr in points[mcs]:
             raise ValueError("Fixed SNR grid has an invalid or duplicate measurement")
         points[mcs].add(snr)
-    if any(not snrs for snrs in points.values()):
-        raise ValueError("Fixed SNR grid must cover all 29 MCS rows")
-    return {mcs: tuple(sorted(snrs)) for mcs, snrs in points.items()}
+    missing = [mcs for mcs in required if not points[mcs]]
+    if missing:
+        if tuple(required) == MCS_ROWS:
+            raise ValueError("Fixed SNR grid must cover all 29 MCS rows")
+        missing_rows = ", ".join(str(mcs) for mcs in missing)
+        raise ValueError(f"Fixed SNR grid is missing requested MCS row(s): {missing_rows}")
+    return {mcs: tuple(sorted(points[mcs])) for mcs in required}
 
 
 def _restore_legacy_manifest_defaults(manifest):
@@ -72,6 +78,17 @@ def _restore_legacy_bank_defaults(bank):
             "ue_yaw_offsets_deg": [], **bank}
 
 
+def _tpmi_policy(bank_metadata: dict) -> str:
+    sounding = "ideal noise-free SRS" if bank_metadata.get("srs_estimator") == "perfect" else "noisy SRS"
+    tpmis = bank_metadata.get("tpmi_candidates")
+    count = bank_metadata.get("num_tpmi_candidates", 28)
+    if tpmis is None and count == 28:
+        subset = "the full set of rank-one codebook precoders"
+    else:
+        subset = f"{count} configured rank-one codebook precoder(s)"
+    return f"{sounding} selects from {subset}"
+
+
 def _write_summary(directory, manifest, bank_metadata, rows):
     from pusch_baseline.mcs_waterfall_plot import write_mcs_waterfall_figure
 
@@ -79,7 +96,7 @@ def _write_summary(directory, manifest, bank_metadata, rows):
         **manifest,
         "physical_channel_bank": bank_metadata,
         "snr_reference": "unit reference PUSCH data RE power / noise variance per receive antenna RE",
-        "tpmi_policy": "noisy SRS selects from the full set of rank-one codebook precoders",
+        "tpmi_policy": _tpmi_policy(bank_metadata),
         "sampling": "fixed MCS per curve; paired physical samples and standardized receiver noise across SNR",
         "decoder": "Sionna PUSCH 20-iteration TB decoding with an RV0 rate-matching extension at low rates",
     }
@@ -128,11 +145,10 @@ def main():
     if not required or not set(required).issubset(MCS_ROWS):
         parser.error("--mcs supports Table 1 indices 0 through 28")
 
-    for key, value in {
-        "TF_CPP_MIN_LOG_LEVEL": "2", "TF_NUM_INTRAOP_THREADS": "2", "TF_NUM_INTEROP_THREADS": "1",
-        "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
-    }.items():
-        os.environ.setdefault(key, value)
+    from pusch_baseline.simulation import apply_tensorflow_threads, configure_worker_env
+
+    configure_worker_env(args.workers, intra_threads=2, inter_threads=1)
+    apply_tensorflow_threads()
 
     from pusch_baseline.config import load_config
     from pusch_baseline.mcs_waterfall import waterfall_snr_grid
@@ -155,12 +171,12 @@ def main():
         parser.error("the waterfall requires a TDD/SRS profile for the physical channel bank")
     try:
         cfg.validate()
-        fixed_grid = _load_fixed_grid(args.snr_from) if args.snr_from is not None else {}
+        fixed_grid = _load_fixed_grid(args.snr_from, required) if args.snr_from is not None else {}
         if args.snr_db is not None:
             points = tuple(sorted(float(snr) for snr in args.snr_db.split(",")))
             if len(set(points)) != len(points) or not all(map(isfinite, points)):
                 raise ValueError("--snr-db requires distinct finite SNR points")
-            fixed_grid = dict.fromkeys(MCS_ROWS, points)
+            fixed_grid = dict.fromkeys(required, points)
         default_snrs = waterfall_snr_grid(args.snr_step)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))

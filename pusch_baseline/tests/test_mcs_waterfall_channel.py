@@ -97,3 +97,29 @@ class McsWaterfallChannelTests(unittest.TestCase):
             # Noise-free sounding picks the same precoder at every SNR.
             weights = np.load(ideal_dir / "weights.npy")
             np.testing.assert_array_equal(weights[0], weights[1])
+
+    def test_configured_rank_one_tpmi_subset_restricts_selected_precoders(self):
+        config_path = Path(__file__).resolve().parents[1] / "configs/cdl_c_4t64r_codebooks_long.json"
+        cfg = load_config(config_path)
+        cfg = replace(
+            cfg,
+            carrier=replace(cfg.carrier, n_size_grid=4),
+            channel=replace(cfg.channel, bs_panel=replace(cfg.channel.bs_panel, rows=2, cols=2)),
+            adaptation=replace(cfg.adaptation, rank_tpmi_candidates=((1, 0), (1, 1), (1, 2), (1, 3))),
+        )
+        with TemporaryDirectory() as temp:
+            meta = write_channel_bank(cfg, [-12, 0], 4, Path(temp) / "noncoherent")
+            self.assertEqual(meta["num_tpmi_candidates"], 4)
+            self.assertEqual(meta["tpmi_candidates"], [0, 1, 2, 3])
+            weights = np.load(Path(temp) / "noncoherent" / "weights.npy")
+            # Non-coherent Rank-1 TPMIs 0..3 activate exactly one TX port per slot.
+            active_ports = np.count_nonzero(np.abs(weights) > 0, axis=-1)
+            np.testing.assert_array_equal(active_ports, 1)
+
+            rank2_cfg = replace(
+                cfg,
+                channel=replace(cfg.channel, estimator="ls"),
+                adaptation=replace(cfg.adaptation, rank_tpmi_candidates=((1, 0), (2, 0))),
+            )
+            with self.assertRaises(ValueError):
+                write_channel_bank(rank2_cfg, [-12], 2, Path(temp) / "rank2")

@@ -184,6 +184,73 @@ class SimulationTests(unittest.TestCase):
         point, = result["points"]
         self.assertEqual((point["num_tb"], point["tb_errors"]), (3, 0))
 
+    def test_cli_fit_budget_accepts_short_tb_and_warmup_overrides(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from pusch_baseline.__main__ import main as cli_main
+
+        long_cfg = str(CONFIGS / "cdl_c_4t64r_codebooks_long.json")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(cli_main(["--config", long_cfg, "--num-tb", "20", "--check"]), 0)
+            self.assertEqual(cli_main(["--config", long_cfg, "--warmup-tb", "15", "--num-tb", "15", "--check"]), 0)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(cli_main(["--warmup-tb", "10", "--check"]), 2)
+        self.assertIn("requires adaptation.olla", err.getvalue())
+
+    def test_worker_thread_configuration_applies_to_fresh_tensorflow_runtime(self):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        from pusch_baseline.simulation import apply_tensorflow_threads, configure_worker_env
+
+        # Calling after TF is already initialized in-process must not raise RuntimeError.
+        saved = {k: os.environ.get(k) for k in ("TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS")}
+        try:
+            os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
+            os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+            apply_tensorflow_threads()
+        finally:
+            for k, val in saved.items():
+                if val is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = val
+
+        # In a fresh child process, configure_worker_env + apply_tensorflow_threads
+        # must set both TF's runtime thread pools and BLAS single-thread env vars.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS",
+                            "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
+        code = (
+            "import json, os\n"
+            "from pusch_baseline.simulation import apply_tensorflow_threads, configure_worker_env\n"
+            "configure_worker_env(2)\n"
+            "apply_tensorflow_threads()\n"
+            "import tensorflow as tf\n"
+            "print(json.dumps({\n"
+            "    'intra': tf.config.threading.get_intra_op_parallelism_threads(),\n"
+            "    'inter': tf.config.threading.get_inter_op_parallelism_threads(),\n"
+            "    'omp': os.environ.get('OMP_NUM_THREADS'),\n"
+            "}))\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        reported = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(reported["intra"], min(os.cpu_count() or 1, 2))
+        self.assertEqual(reported["inter"], 1)
+        self.assertEqual(reported["omp"], "1")
+
 
 if __name__ == "__main__":
     unittest.main()

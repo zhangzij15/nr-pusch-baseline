@@ -6,14 +6,13 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
-import os
 from pathlib import Path
 import sys
 
 from pusch_baseline import load_config, simulate
 from pusch_baseline.__main__ import _parse_snr
 from pusch_baseline.outputs import target_throughput_report, write_results
-from pusch_baseline.simulation import simulate_codebook_comparison
+from pusch_baseline.simulation import configure_worker_env, simulate_codebook_comparison
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -121,12 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Target BLER {olla.target_bler:.1%} | {olla.warmup_tb} warmup TBs and "
                   f"{cfg.sweep.num_tb_per_snr} measurement TBs per SNR", flush=True)
 
-        os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-        os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(min(os.cpu_count() or 1, 2 if args.workers > 1 else 4)))
-        os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1" if args.workers > 1 else "2")
-        if args.workers > 1:
-            for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-                os.environ.setdefault(name, "1")
+        configure_worker_env(args.workers)
         if args.single:
             saved_dir = write_results(output_dir, **simulate(cfg, on_point=_report))
         else:

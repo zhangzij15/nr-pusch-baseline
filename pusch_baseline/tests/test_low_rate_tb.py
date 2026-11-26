@@ -66,3 +66,19 @@ class LowRateTbTests(unittest.TestCase):
                 # Remove the PUSCH-specific scrambling, which nrULSCH leaves to nrPUSCH.
                 coded = codec._scrambler(codec.encode(payload)).numpy().astype("uint8")
                 self.assertEqual(sha256(coded.tobytes()).hexdigest(), expected)
+
+    def test_fixed_grant_simulate_supports_low_rate_mcs_across_all_tables(self):
+        from pusch_baseline import SimulationConfig, simulate
+
+        base = SimulationConfig()
+        base = replace(
+            base,
+            carrier=replace(base.carrier, n_size_grid=12),
+            sweep=replace(base.sweep, snr_db=(25.0,), num_tb_per_snr=2, batch_size=2, seed=7),
+        )
+        for mcs_table in (1, 2, 3):
+            with self.subTest(mcs_table=mcs_table):
+                cfg = replace(base, pusch=replace(base.pusch, mcs_table=mcs_table, mcs_index=0))
+                run = simulate(cfg)
+                point, = run["points"]
+                self.assertEqual((point["num_tb"], point["tb_errors"]), (2, 0))

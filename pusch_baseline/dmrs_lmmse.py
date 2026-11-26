@@ -31,7 +31,7 @@ class DmrsLmmseEstimator(Block):
     when the receiver computes the channel gain and demapper reliability.
     """
 
-    def __init__(self, resource_grid, delay_spread_s, doppler_hz, *, precision):
+    def __init__(self, resource_grid, delay_spread_s, doppler_hz, *, precision, symbol_duration_s=None):
         super().__init__(precision=precision)
         pattern = resource_grid.pilot_pattern
         mask = pattern.mask.numpy()[0, 0].astype(bool)
@@ -46,13 +46,14 @@ class DmrsLmmseEstimator(Block):
         if not power.size or not np.allclose(power, power.flat[0]) or power.flat[0] <= 0:
             raise ValueError("Rank 1 LMMSE requires a rectangular, constant-power DM-RS grid.")
 
+        symbol_duration = resource_grid.ofdm_symbol_duration if symbol_duration_s is None else float(symbol_duration_s)
         self._remove_nulls = RemoveNulledSubcarriers(resource_grid, precision=precision)
         self._symbols = tf.constant(symbols)
         self._subcarriers = tf.constant(subcarriers)
         self._pilot_inverse = tf.constant(1 / pilot_grid, self.cdtype)
         self._pilot_power = tf.constant(power.flat[0], self.rdtype)
         eig_time, pilot_time, grid_time = _covariance_basis(
-            mask.shape[0], tuple(symbols), 2 * np.pi * doppler_hz * resource_grid.ofdm_symbol_duration,
+            mask.shape[0], tuple(symbols), 2 * np.pi * doppler_hz * symbol_duration,
             "time",
         )
         eig_freq, pilot_freq, grid_freq = _covariance_basis(

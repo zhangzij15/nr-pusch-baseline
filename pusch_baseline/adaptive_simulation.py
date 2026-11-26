@@ -19,7 +19,6 @@ from sionna.phy.ofdm import ResourceGrid
 from .adaptation import select_grants, select_mcs_for_precoder
 from .continuous_channel import ContinuousCir
 from .link import PairedCir, PuschLink, _pusch_config, build_cir_model, precoder_amplitude_scale
-from .low_rate_tb import low_rate_plan
 from .mcs_stability import assess_mcs_stability
 from .olla import McsIndexController, OllaController
 from .srs import SrsEstimator
@@ -248,9 +247,7 @@ def _grant_configurations(cfg, mcs_indices):
                         modulation_order=pc.tb.num_bits_per_symbol, num_layers=rank,
                     )
                     effective_rate = int(cb_size) / int(tf.reduce_max(cw_lengths))
-                    if effective_rate > 0.95 or (
-                        pc.tb.num_bits_per_symbol != 2 and low_rate_plan(pc) is not None
-                    ):
+                    if effective_rate > 0.95:
                         raise ValueError(f"Sionna cannot encode effective LDPC rate {effective_rate:.3f}")
                     sizes[rank, mcs] = tbs
                 except (AssertionError, ValueError) as exc:

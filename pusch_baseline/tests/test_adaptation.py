@@ -123,6 +123,27 @@ class LinkAdaptationTests(unittest.TestCase):
             )
             self.assertEqual(decisions[name], independent)
 
+    def test_thresholdless_selection_uses_sum_rate_across_ranks(self):
+        first = (1, 0, 10)
+        second = (1, 1, 10)
+        two_layers = (2, 0, 10)
+        candidates = {
+            first: (np.array([[1.0], [0.0]]), 2000),
+            second: (np.array([[0.0], [1.0]]), 2000),
+            two_layers: (np.eye(2) / math.sqrt(2.0), 4000),
+        }
+        # High-SNR orthogonal 2x2 channel: Rank 2 delivers nearly 2x sum capacity.
+        channel = np.broadcast_to(np.eye(2, dtype=complex)[None], (12, 2, 2))
+        choice, sinr_db = select_grants(channel, 0.01, candidates, None, 0.0, {None: list(candidates)})[None]
+        self.assertEqual(choice, two_layers)
+        self.assertAlmostEqual(sinr_db, 10.0 * math.log10(50.0))
+
+        # When one port fades out, Rank 1 on the surviving port maximizes sum capacity.
+        faded = np.broadcast_to(np.diag([0.0, 1.0]).astype(complex)[None], (12, 2, 2))
+        choice, sinr_db = select_grants(faded, 0.01, candidates, None, 0.0, {None: list(candidates)})[None]
+        self.assertEqual(choice, second)
+        self.assertAlmostEqual(sinr_db, 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()

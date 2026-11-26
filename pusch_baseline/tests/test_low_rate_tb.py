@@ -82,3 +82,34 @@ class LowRateTbTests(unittest.TestCase):
                 run = simulate(cfg)
                 point, = run["points"]
                 self.assertEqual((point["num_tb"], point["tb_errors"]), (2, 0))
+
+    def test_low_rate_extension_supports_16qam_on_large_nr_bandwidths(self):
+        from pusch_baseline import SimulationConfig, simulate
+        from pusch_baseline.config import AdaptationSettings, OllaSettings
+
+        base = SimulationConfig()
+        # 100 PRB Table 1 MCS 10 and 162 PRB Table 3 MCS 15 both use 16-QAM with
+        # BG1 effective rate slightly below 1/3 (~0.330), triggering RV0 low-rate coding.
+        for prb, mcs_table, mcs_index in ((100, 1, 10), (162, 3, 15)):
+            with self.subTest(prb=prb, mcs_table=mcs_table, mcs_index=mcs_index):
+                cfg = replace(
+                    base,
+                    carrier=replace(base.carrier, n_size_grid=prb),
+                    pusch=replace(base.pusch, mcs_table=mcs_table, mcs_index=mcs_index),
+                    sweep=replace(base.sweep, snr_db=(25.0,), num_tb_per_snr=2, batch_size=2, seed=11),
+                )
+                point, = simulate(cfg)["points"]
+                self.assertEqual((point["num_tb"], point["tb_errors"]), (2, 0))
+
+        adaptive_cfg = replace(
+            base,
+            carrier=replace(base.carrier, n_size_grid=100),
+            pusch=replace(base.pusch, mcs_table=1, mcs_index=10),
+            adaptation=AdaptationSettings(
+                mcs_indices=(10,),
+                olla=OllaSettings(warmup_tb=2, window_tb=2),
+            ),
+            sweep=replace(base.sweep, snr_db=(25.0,), num_tb_per_snr=2, seed=11),
+        )
+        point, = simulate(adaptive_cfg)["points"]
+        self.assertEqual((point["num_tb"], point["tb_errors"]), (2, 0))

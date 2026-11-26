@@ -72,3 +72,17 @@ class DmrsLmmseTests(unittest.TestCase):
             gains[None, None, :, None, None, None, None], estimate.shape
         ), atol=1e-6)
         np.testing.assert_allclose(variance, 0, atol=1e-6)
+
+    def test_link_passes_slot_invariant_symbol_duration_to_lmmse(self):
+        from pusch_baseline.link import PuschLink
+
+        base = SimulationConfig(precision="double")
+        cfg0 = replace(
+            base,
+            carrier=replace(base.carrier, n_size_grid=4, slot_number=0),
+            channel=replace(base.channel, kind="tdl", profile="C", ue_speed_kmh=120.0, estimator="lmmse"),
+        )
+        cfg2 = replace(cfg0, carrier=replace(cfg0.carrier, slot_number=2))
+        est0 = PuschLink(cfg0, external_channel=True)._receiver._channel_estimator
+        est2 = PuschLink(cfg2, external_channel=True)._receiver._channel_estimator
+        np.testing.assert_allclose(est0._grid_time.numpy(), est2._grid_time.numpy(), atol=1e-12)

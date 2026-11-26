@@ -23,9 +23,9 @@ def select_mcs_for_precoder(
     )
 
 
-def _effective_sinr_db(
+def _effective_sinr_metrics(
     gram: np.ndarray, noise_variance: float, tone_counts: np.ndarray | None
-) -> float:
+) -> tuple[float, float]:
     # The diagonal of (I + H_eff^H H_eff / noise)^-1 is the per-layer
     # MMSE error variance, equal to 1 / (1 + SINR) for white noise.
     eigenvalues, eigenvectors = np.linalg.eigh(gram)
@@ -34,12 +34,13 @@ def _effective_sinr_db(
     layer_error = np.sum(np.abs(eigenvectors)**2 * mode_error[:, None, :], axis=-1)
 
     # A Gaussian-input abstraction: average log(1 + SINR) over frequency
-    # and layers, then map to an equivalent single SINR. Keep exact nulls
-    # finite for reporting (zero linear SINR is represented as -300 dB).
+    # and layers, then map to an equivalent single SINR. Also track the
+    # multi-layer sum mutual information for thresholdless multi-rank choice.
+    rank = gram.shape[-1]
     log_rate = -np.log(np.clip(layer_error, 1e-30, 1.0)).mean(axis=-1)
-    log_rate = np.average(log_rate, weights=tone_counts)
+    log_rate = float(np.average(log_rate, weights=tone_counts))
     linear_sinr = max(np.expm1(log_rate), 1e-30)
-    return float(10.0 * np.log10(linear_sinr))
+    return float(10.0 * np.log10(linear_sinr)), rank * log_rate
 
 
 def select_grant(
@@ -108,21 +109,28 @@ def select_grants(
         tone_counts = np.diff(prb_starts, append=len(tx_gram))
         tx_gram = np.add.reduceat(tx_gram, prb_starts, axis=0) / tone_counts[:, None, None]
     sinr_by_precoder = {}
+    sum_rate_by_precoder = {}
     for key in dict.fromkeys(key for keys in subsets.values() for key in keys):
         precoder, _ = candidates[key]
         spatial_key = key[:2]
         if spatial_key not in sinr_by_precoder:
             gram = precoder.conj().T @ tx_gram @ precoder
-            sinr_by_precoder[spatial_key] = _effective_sinr_db(gram, noise_variance, tone_counts)
+            sinr_by_precoder[spatial_key], sum_rate_by_precoder[spatial_key] = (
+                _effective_sinr_metrics(gram, noise_variance, tone_counts)
+            )
 
     def spatial_order(key: GrantKey):
         rank, tpmi, _ = key
         return sinr_by_precoder[rank, tpmi], -rank, -tpmi
 
+    def sum_rate_order(key: GrantKey):
+        rank, tpmi, _ = key
+        return sum_rate_by_precoder[rank, tpmi], sinr_by_precoder[rank, tpmi], -rank, -tpmi
+
     decisions = {}
     for name, keys in subsets.items():
         if mcs_thresholds_db is None:
-            selected = max(keys, key=spatial_order)
+            selected = max(keys, key=sum_rate_order)
             decisions[name] = (selected, sinr_by_precoder[selected[:2]])
             continue
         margin = margin_db if margin_offsets_db is None else margin_db + margin_offsets_db[name]

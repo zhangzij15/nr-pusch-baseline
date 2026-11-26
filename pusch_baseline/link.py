@@ -227,6 +227,17 @@ def _compiled_tb_decoder(pc, precision, cache):
     return cache[key]
 
 
+# Mid-rate placeholder MCS entries (mcs_table, mcs_index) per QAM modulation
+# order, used only to initialize Sionna's waveform components before substituting
+# the RV0 low-rate TB codec.
+_PLACEHOLDER_MCS_BY_QAM = {
+    2: (1, 5),   # QPSK, R = 379/1024
+    4: (1, 14),  # 16-QAM, R = 553/1024
+    6: (1, 22),  # 64-QAM, R = 719/1024
+    8: (2, 21),  # 256-QAM, R = 711/1024
+}
+
+
 def _build_channel_estimator(cfg: SimulationConfig, pc: PUSCHConfig, resource_grid):
     estimator = cfg.channel.estimator
     if estimator == "perfect":
@@ -238,7 +249,10 @@ def _build_channel_estimator(cfg: SimulationConfig, pc: PUSCHConfig, resource_gr
         if channel.kind != "awgn":
             delay_spread_s = channel.delay_spread_ns * 1e-9
             doppler_hz = channel.ue_speed_kmh / 3.6 * channel.carrier_frequency_ghz * 1e9 / speed_of_light
-        return DmrsLmmseEstimator(resource_grid, delay_spread_s, doppler_hz, precision=cfg.precision)
+        return DmrsLmmseEstimator(
+            resource_grid, delay_spread_s, doppler_hz,
+            precision=cfg.precision, symbol_duration_s=cfg.slot_duration_s / 14,
+        )
     if pc.dmrs.length == 2:
         # Short grants can schedule fewer DM-RS pairs than the configured maximum.
         # Pass the actual pair count so Sionna averages the two symbols in each pair.
@@ -278,14 +292,14 @@ class PuschLink:
         rate_plan = low_rate_plan(pc) if allow_low_rate else None
         tx_config = pc
         if rate_plan is not None:
-            # The native transmitter constructs its own TB encoder. A QPSK
-            # grant with the same RE grid lets us initialize its waveform
+            # The native transmitter constructs its own TB encoder. A grant with
+            # the same RE grid and modulation order initializes its waveform
             # components before supplying the actual grant's RV0 codec.
-            if int(pc.tb.num_bits_per_symbol) != 2:
-                raise ValueError("The low-rate PUSCH extension requires QPSK.")
+            qam = int(pc.tb.num_bits_per_symbol)
+            if qam not in _PLACEHOLDER_MCS_BY_QAM:
+                raise ValueError(f"Unsupported modulation order for low-rate PUSCH: {qam}")
             tx_config = deepcopy(pc)
-            tx_config.tb.mcs_table = 1
-            tx_config.tb.mcs_index = 5
+            tx_config.tb.mcs_table, tx_config.tb.mcs_index = _PLACEHOLDER_MCS_BY_QAM[qam]
         self._transmitter = PUSCHTransmitter(
             tx_config, return_bits=True, output_domain="freq", precision=cfg.precision
         )

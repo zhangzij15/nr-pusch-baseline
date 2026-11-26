@@ -251,6 +251,29 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(reported["inter"], 1)
         self.assertEqual(reported["omp"], "1")
 
+    def test_explicit_worker_thread_flags_override_inherited_thread_limits(self):
+        import argparse
+        import os
+        from unittest.mock import patch
+
+        from pusch_baseline.simulation import add_worker_thread_arguments, configure_worker_env
+
+        parser = argparse.ArgumentParser()
+        add_worker_thread_arguments(parser)
+        args = parser.parse_args(["--tf-intra-threads", "1", "--tf-inter-threads", "3"])
+        with patch.dict(os.environ, {"TF_NUM_INTRAOP_THREADS": "4", "TF_NUM_INTEROP_THREADS": "2"}):
+            configure_worker_env(16, intra_threads=2, inter_threads=1,
+                                 tf_intra_threads=args.tf_intra_threads, tf_inter_threads=args.tf_inter_threads)
+            self.assertEqual(os.environ["TF_NUM_INTRAOP_THREADS"], "1")
+            self.assertEqual(os.environ["TF_NUM_INTEROP_THREADS"], "3")
+
+        args = parser.parse_args([])
+        with patch.dict(os.environ, {"TF_NUM_INTRAOP_THREADS": "4", "TF_NUM_INTEROP_THREADS": "2"}):
+            configure_worker_env(8, intra_threads=2, inter_threads=1,
+                                 tf_intra_threads=args.tf_intra_threads, tf_inter_threads=args.tf_inter_threads)
+            self.assertEqual(os.environ["TF_NUM_INTRAOP_THREADS"], "4")
+            self.assertEqual(os.environ["TF_NUM_INTEROP_THREADS"], "2")
+
 
 if __name__ == "__main__":
     unittest.main()

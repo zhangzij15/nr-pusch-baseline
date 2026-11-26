@@ -62,13 +62,13 @@ Both showcase examples use **4T64R CDL-C, 48 PRBs (30 kHz SCS), `DSUDD` TDD, 6.7
 > Italicized percentages in parentheses denote the measured evaluation BLER (10% target); throughput is wall-clock goodput over all TDD slots (`thp_wall_clock_mbps`).
 
 <details>
-<summary>Run the Figure 1 scenario (~25 min on a 16-core CPU)</summary>
+<summary>Run the Figure 1 scenario</summary>
 
 ```bash
-python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
+python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 10
 ```
 
-> Adjust `--workers` to your physical CPU core count (numerical outputs are identical). Omitting `--snr` sweeps the built-in 10-point grid (−26 to 0 dB).
+> Omitting `--snr` sweeps the built-in 10-point grid (−26 to 0 dB); adjust `--workers` up to your physical CPU core count (and SNR count) without affecting numerical results. Each SNR group shares one physical channel and noiseless transmit grid across all four ICE/RCE combinations while maintaining independent receiver and OLLA states.
 
 </details>
 
@@ -142,7 +142,7 @@ pip install -e . --no-deps   # optional: registers the pusch-baseline CLI comman
 ```
 
 > [!TIP]
-> **100% pure Python — no MATLAB or GPU required.** All runner scripts automatically configure TensorFlow thread pools and BLAS thread limits according to `--workers` to prevent CPU oversubscription.
+> **100% pure Python — no MATLAB or GPU required.** All runner scripts automatically configure TensorFlow thread pools and BLAS thread limits according to `--workers` to prevent CPU oversubscription, and also accept `--tf-intra-threads` / `--tf-inter-threads` for explicit tuning.
 
 ---
 
@@ -193,9 +193,17 @@ python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_codebooks_l
 | `--snr-step` / `--snr-from` | `run_mcs_waterfall` | Adaptive refinement step (`1/0.5/0.25/0.125` dB) or reuse an existing `summary.json` grid |
 | `--single` | `run_uplink` | Run a single curve using the config's candidates instead of 3-codebook comparison |
 | `--seed INT` | All | Override random seed (sweep multiple seeds for ensemble averaging) |
-| `--workers INT` | All three `run_*.py` | Worker process count (recommended: up to physical CPU cores) |
+| `--workers INT` | All three `run_*.py` | Maximum worker processes (uplink & ICE/RCE shard by SNR group; waterfall shards by MCS row) |
+| `--tf-intra-threads INT` / `--tf-inter-threads INT` | All three `run_*.py` | Explicitly override per-worker TensorFlow intra-op / inter-op thread counts (takes precedence over environment variables) |
+| `--compile-phy` | `run_uplink` / `run_ice_rce` / `python -m pusch_baseline` | Optional for adaptive runs: execute PUSCH TX, channel application, RX, and error counting in TensorFlow graphs (numerically identical to eager mode) |
 
 </details>
+
+> [!TIP]
+> **Lossless Acceleration & Parallel Tuning**:
+> - **Built-in sharing**: `run_uplink.py` and `run_ice_rce.py` shard by SNR group to share CIR generation, prepared SRS pilot observations, and noiseless transmit grids across codebooks/ICE-RCE variants and grouped SNRs; `run_mcs_waterfall.py` computes precoder weights lazily on first demand in full-power adaptive grids and shares them across MCS workers.
+> - **Optional TF graph compilation (`--compile-phy`)**: For longer adaptive sweeps, pass `--compile-phy` (e.g., `python run_uplink.py --snr=-12 --compile-phy`) or `simulate(cfg, compile_phy=True)` in Python to run the adaptive PUSCH PHY inside `tf.function` graphs with identical per-slot decisions. Each process caches compiled graphs per link; because first-time tracing incurs overhead, speedup scales with how often the same `(grant, frame slot)` recurs.
+> - **Thread control**: All three `run_*.py` scripts accept `--tf-intra-threads` and `--tf-inter-threads` to fine-tune CPU utilization on your hardware.
 
 ---
 
@@ -263,9 +271,9 @@ Custom external CIR models (e.g., ray-tracing or measured datasets) can be plugg
 
 ```text
 .
-├── run_uplink.py                 # Entry 1: 3-codebook comparison (--single / --workers / --channel-evolution / --seed)
-├── run_ice_rce.py                # Entry 2: 4-curve SRS/DM-RS ICE vs. RCE throughput sweep
-├── run_mcs_waterfall.py          # Entry 3: MCS Table 1 BLER waterfall (resumable + sub-dB refinement)
+├── run_uplink.py                 # Entry 1: 3-codebook comparison (--single / --workers / --compile-phy / --channel-evolution)
+├── run_ice_rce.py                # Entry 2: 4-curve SRS/DM-RS ICE vs. RCE sweep (shared-CIR SNR groups + --compile-phy)
+├── run_mcs_waterfall.py          # Entry 3: MCS Table 1 BLER waterfall (resumable, sub-dB refinement & lazy weight cache)
 ├── README.md / README_EN.md      # Chinese / English documentation
 ├── LICENSE                       # MIT License
 ├── CITATION.cff                  # GitHub citation metadata
@@ -277,11 +285,11 @@ Custom external CIR models (e.g., ray-tracing or measured datasets) can be plugg
     ├── __init__.py               # Public API: SimulationConfig, load_config, simulate, simulate_codebook_comparison
     ├── __main__.py               # Single-scenario CLI (python -m pusch_baseline / pusch-baseline)
     ├── config.py                 # Typed config dataclasses & strict schema validation
-    ├── link.py                   # Single-UE PUSCH link wrapper (exact TS 38.214 TBS & paired noise injection)
-    ├── simulation.py             # Fixed-grant sweep, codebook comparison & runtime thread configuration
-    ├── adaptive_simulation.py    # Physical TDD slot timeline, SRS periodicity & closed-loop adaptation engine
+    ├── link.py                   # Single-UE PUSCH link wrapper (exact TS 38.214 TBS, paired noise & optional PHY graph cache)
+    ├── simulation.py             # Fixed-grant sweep, codebook/receiver comparisons & thread / graph CLI helpers
+    ├── adaptive_simulation.py    # Physical TDD timeline, SRS periodicity, shared noiseless signals & closed-loop engine
     ├── continuous_channel.py     # Cross-period continuous CIR sampler & TS 38.211 normal-CP symbol clock
-    ├── srs.py                    # TS 38.211 cyclic-shift multi-port SRS generation & CDM estimation
+    ├── srs.py                    # TS 38.211 cyclic-shift multi-port SRS generation, cross-SNR reuse & CDM estimation
     ├── adaptation.py             # Debiased 12-tone PRB Gram & MI-based TPMI/Rank selection
     ├── dmrs_lmmse.py             # Rank-1 separable time-frequency DM-RS LMMSE estimator
     ├── rank_one_detector.py      # Unbiased Rank-1 LMMSE detector & soft demapper
@@ -291,7 +299,7 @@ Custom external CIR models (e.g., ray-tracing or measured datasets) can be plugg
     ├── throughput_statistics.py  # 95% SRS-period bootstrap CIs & paired throughput differences
     ├── outputs.py                # Single-run JSON / CSV / PNG writers
     ├── comparison_outputs.py     # 3-codebook comparison outputs & plotting
-    ├── mcs_waterfall_channel.py  # Shared memmap physical channel bank with SHA-256 fingerprint
+    ├── mcs_waterfall_channel.py  # Shared memmap physical channel bank & on-demand precoder weight cache (SHA-256 fingerprint)
     ├── mcs_waterfall.py          # Adaptive sub-dB MCS waterfall sampler
     ├── mcs_waterfall_plot.py     # Waterfall PNG / PDF plotter
     ├── configs/                  # 7 built-in JSON scenario profiles
@@ -335,7 +343,7 @@ Custom external CIR models (e.g., ray-tracing or measured datasets) can be plugg
 python -m unittest discover -s pusch_baseline/tests -v
 ```
 
-The pure-Python unit test suite covers multi-port cyclic-shift SRS orthogonality, TS 38.211 normal-CP symbol timing and `ContinuousCir`, DM-RS LMMSE, NR TBS / BG1-BG2 / low-rate RV0 bit-level MATLAB parity, cross-stage TDD phase continuity, slot-keyed PUSCH noise and payload pairing, online OLLA and 3-window stability, sub-dB waterfall refinement with short-grant slicing, and ICE/RCE outputs — verified automatically on every push via GitHub Actions CI.
+The pure-Python unit test suite covers multi-port cyclic-shift SRS orthogonality and cross-SNR observation reuse, TS 38.211 normal-CP symbol timing and `ContinuousCir`, DM-RS LMMSE, NR TBS / BG1-BG2 / low-rate RV0 bit-level MATLAB parity, cross-stage TDD phase continuity, slot-keyed PUSCH noise and payload pairing, `--compile-phy` TensorFlow graph parity, online OLLA and 3-window stability, sub-dB waterfall refinement with short-grant slicing and lazy weight sharing, explicit TF thread overrides, and shared-CIR ICE/RCE outputs — verified automatically on every push via GitHub Actions CI.
 
 ---
 
@@ -358,7 +366,7 @@ Reference SNR is defined prior to the 64-antenna receive array (~18 dB combining
 <details>
 <summary><b>Q3: Can an interrupted waterfall sweep resume without starting over?</b></summary>
 
-Yes. `run_mcs_waterfall.py` atomically checkpoints every completed `(MCS, SNR)` point under `mcs_checkpoints/`. Within the same simulator revision, re-running with the same `--output-dir` and parameters verifies the manifest, revision, and channel fingerprint and resumes seamlessly. After an update to coding, channel timing, or precoder scoring, start a new output directory (archived results remain readable and their SNR grids can still be reused via `--snr-from`).
+Yes. `run_mcs_waterfall.py` atomically checkpoints every completed `(MCS, SNR)` point under `mcs_checkpoints/`. Within the same simulator revision, re-running with the same `--output-dir` and simulation parameters verifies the manifest, revision, and channel fingerprint before resuming cleanly (worker and thread counts can be changed on resume). In full-power adaptive grids, precoder weights are computed lazily per measured SNR and shared across MCS workers. After an update to coding, channel timing, or precoder scoring, start a new output directory (archived results remain readable and their SNR grids can still be reused via `--snr-from`).
 
 </details>
 

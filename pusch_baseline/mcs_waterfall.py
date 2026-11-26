@@ -39,17 +39,19 @@ def _channel_batch(channels, indices):
 
 
 def simulate_mcs_curve(cfg, bank_path, mcs_index, batch_size, on_point=None, *,
-                       snr_points=None, completed_points=(), min_snr_step: float = 1.0):
+                       snr_points=None, completed_points=(), min_snr_step: float = 1.0,
+                       weight_locks=()):
     """Measure one TS 38.214 Table 1 row with independently decoded TBs."""
     import tensorflow as tf
     from sionna.phy import config as sionna_config
 
     from .link import PuschLink
+    from .mcs_waterfall_channel import WaterfallWeights
 
     bank_path = Path(bank_path)
     bank = json.loads((bank_path / "bank.json").read_text(encoding="utf-8"))
     channels = np.load(bank_path / "channel.npy", mmap_mode="r")
-    weights = np.load(bank_path / "weights.npy", mmap_mode="r")
+    weights = WaterfallWeights(cfg, bank_path, bank, locks=weight_locks)
     frame_slots = np.load(bank_path / "slots.npy")
     slots = {
         int(slot): np.flatnonzero(frame_slots == slot)

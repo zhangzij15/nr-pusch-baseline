@@ -12,7 +12,9 @@ import sys
 from pusch_baseline import load_config, simulate
 from pusch_baseline.__main__ import _parse_snr
 from pusch_baseline.outputs import target_throughput_report, write_results
-from pusch_baseline.simulation import configure_worker_env, simulate_codebook_comparison
+from pusch_baseline.simulation import (
+    add_adaptive_phy_argument, add_worker_thread_arguments, configure_worker_env, simulate_codebook_comparison,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -32,30 +34,36 @@ def _report(point: dict, *, name: str | None = None) -> None:
     )
 
 
-def _comparison_shard(cfg, snr_db):
-    settings = replace(cfg.sweep, snr_db=(snr_db,))
-    return simulate_codebook_comparison(replace(cfg, sweep=settings))
+def _comparison_shard(cfg, snrs, *, compile_phy: bool = False):
+    settings = replace(cfg.sweep, snr_db=snrs)
+    return simulate_codebook_comparison(replace(cfg, sweep=settings), compile_phy=compile_phy)
 
 
-def _parallel_comparison(cfg, workers):
-    """Run SNR shards with identical seeds and merge them in configured order."""
+def _parallel_comparison(cfg, workers, *, compile_phy: bool = False):
+    """Share channel generation within each SNR shard and merge in configured order."""
     snrs = cfg.sweep.snr_db
+    shard_count = min(workers, len(snrs))
+    groups = tuple(snrs[index::shard_count] for index in range(shard_count))
     shards = {}
-    with ProcessPoolExecutor(max_workers=min(workers, len(snrs))) as executor:
-        pending = {executor.submit(_comparison_shard, cfg, snr): snr for snr in snrs}
+    with ProcessPoolExecutor(max_workers=shard_count) as executor:
+        pending = {
+            executor.submit(_comparison_shard, cfg, group, compile_phy=compile_phy): group for group in groups
+        }
         for job in as_completed(pending):
-            snr = pending[job]
             shard = job.result()
-            shards[snr] = shard
+            for index, snr in enumerate(pending[job]):
+                shards[snr] = shard, index
             for name, run in shard.items():
-                _report(run["points"][0], name=name)
+                for point in run["points"]:
+                    _report(point, name=name)
 
-    combined = shards[snrs[0]]
+    combined = shards[snrs[0]][0]
+    ordered = [shards[snr] for snr in snrs]
     for name, run in combined.items():
-        run["config"]["sweep"]["snr_db"] = snrs
-        run["points"] = [shards[snr][name]["points"][0] for snr in snrs]
-        if any(shards[snr][name]["metadata"] != run["metadata"] for snr in snrs):
+        if any(shard[name]["metadata"] != run["metadata"] for shard, _ in ordered):
             raise RuntimeError(f"Inconsistent metadata or channel fingerprints in {name} SNR shards")
+        run["config"]["sweep"]["snr_db"] = snrs
+        run["points"] = [shard[name]["points"][index] for shard, index in ordered]
     return combined
 
 
@@ -70,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-tb", type=int, help="Override the evaluation TB count per SNR.")
     parser.add_argument("--warmup-tb", type=int, help="Override the OLLA calibration TB count per SNR.")
     parser.add_argument("--workers", type=int, default=1, help="Parallel paired SNR shards for a codebook sweep.")
+    add_worker_thread_arguments(parser)
+    add_adaptive_phy_argument(parser)
     parser.add_argument("--ue-yaw-offsets", type=_parse_snr,
                         help="Comma-separated CDL UE yaw offsets in degrees, sampled per SRS period.")
     parser.add_argument("--tx-power-mode", choices=("full_power", "per_port"),
@@ -83,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.workers < 1 or (args.single and args.workers != 1):
             raise ValueError("--workers must be positive; --single requires one worker")
         cfg = load_config(args.config)
+        if args.compile_phy and cfg.adaptation is None:
+            raise ValueError("--compile-phy requires an adaptive configuration")
         sweep_overrides = {}
         if args.snr is not None:
             sweep_overrides["snr_db"] = args.snr
@@ -120,9 +132,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Target BLER {olla.target_bler:.1%} | {olla.warmup_tb} warmup TBs and "
                   f"{cfg.sweep.num_tb_per_snr} measurement TBs per SNR", flush=True)
 
-        configure_worker_env(args.workers)
+        configure_worker_env(args.workers, tf_intra_threads=args.tf_intra_threads, tf_inter_threads=args.tf_inter_threads)
         if args.single:
-            saved_dir = write_results(output_dir, **simulate(cfg, on_point=_report))
+            saved_dir = write_results(output_dir, **simulate(cfg, on_point=_report, compile_phy=args.compile_phy))
         else:
             from pusch_baseline.comparison_outputs import write_comparison
 
@@ -131,10 +143,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{phase} | {done}/{total} TB per SNR", flush=True)
 
             if args.workers > 1 and len(cfg.sweep.snr_db) > 1:
-                runs = _parallel_comparison(cfg, args.workers)
+                runs = _parallel_comparison(cfg, args.workers, compile_phy=args.compile_phy)
             else:
                 runs = simulate_codebook_comparison(
                     cfg, on_point=lambda name, point: _report(point, name=name), on_progress=progress,
+                    compile_phy=args.compile_phy,
                 )
             saved_dir = write_comparison(output_dir, runs)
         print(f"Saved {saved_dir.resolve()}")

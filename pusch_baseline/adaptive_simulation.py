@@ -93,13 +93,15 @@ class SoundingChannel:
         symbols = tf.gather(channel_slot, self._estimator.symbol_indices, axis=2)
         return np.moveaxis(np.asarray(tf.reduce_mean(symbols, axis=2)), -1, 0)
 
-    def slots(self, offsets, *, start_slot: int = 0):
+    def slots(self, offsets, *, start_slot: int = 0, paired_sounding: bool = False):
         """Yield sounding channel info, then full responses on active data slots."""
+        ideal_srs = self._full_sounding_grid or paired_sounding
+        real_srs = not self._full_sounding_grid or paired_sounding
         if self._model is None:
-            if self._full_sounding_grid:
-                yield self._ideal_sounding(self._awgn_response[0, 0, :, 0])
-            else:
-                yield self._estimator.sample_pilots(self._awgn_response[0, 0, :, 0])
+            slot = self._awgn_response[0, 0, :, 0]
+            ideal = self._ideal_sounding(slot) if ideal_srs else None
+            real = self._estimator.sample_pilots(slot) if real_srs else None
+            yield {"perfect": ideal, "real": real} if paired_sounding else (ideal if ideal_srs else real)
             for _ in offsets[1:]:
                 yield self._awgn_response
             return
@@ -132,20 +134,24 @@ class SoundingChannel:
             rms = tf.sqrt(tf.reduce_mean(tf.square(tf.abs(sounding))))
             self._drop_rms = tf.cast(tf.where(rms > 0, rms, tf.ones_like(rms)), sounding.dtype)
             scaled = sounding[0, 0, :, 0] / self._drop_rms
-            yield self._ideal_sounding(scaled) if self._full_sounding_grid else self._estimator.sample_pilots(scaled)
-            del sounding
-        elif self._full_sounding_grid:
-            sounding = _ofdm_frequency_response(self._frequencies, srs_gains, delays)
-            if self._drop_rms is not None:
-                sounding = sounding / self._drop_rms
-            yield np.moveaxis(np.asarray(tf.reduce_mean(sounding[0, 0, :, 0], axis=2)), -1, 0)
-            del sounding
+            ideal = self._ideal_sounding(scaled) if ideal_srs else None
+            real = self._estimator.sample_pilots(scaled) if real_srs else None
+            del scaled, sounding
         else:
-            sounding = _ofdm_frequency_response(self._pilot_frequencies, srs_gains, delays)
-            if self._drop_rms is not None:
-                sounding = sounding / self._drop_rms
-            yield sounding[0, 0, :, 0]
-            del sounding
+            ideal = real = None
+            if ideal_srs:
+                sounding = _ofdm_frequency_response(self._frequencies, srs_gains, delays)
+                if self._drop_rms is not None:
+                    sounding = sounding / self._drop_rms
+                ideal = np.moveaxis(np.asarray(tf.reduce_mean(sounding[0, 0, :, 0], axis=2)), -1, 0)
+                del sounding
+            if real_srs:
+                sounding = _ofdm_frequency_response(self._pilot_frequencies, srs_gains, delays)
+                if self._drop_rms is not None:
+                    sounding = sounding / self._drop_rms
+                real = sounding[0, 0, :, 0]
+                del sounding
+        yield {"perfect": ideal, "real": real} if paired_sounding else (ideal if ideal_srs else real)
 
         cursor = n_srs
         for _ in offsets[1:]:
@@ -460,7 +466,8 @@ def _build_adaptive_metadata(
         )
 
 
-def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codebooks=None, on_progress=None):
+def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *,
+                      codebooks=None, receiver_variants=None, on_progress=None, phy_graph_cache=None):
     settings = cfg.adaptation
     sweep = cfg.sweep
     tdd = settings.tdd_pattern is not None
@@ -476,7 +483,22 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         name: tuple(key for key in srs_candidates if key[1] in tpmi)
         for name, tpmi in codebooks.items()
     }
-    srs_ideal = settings.srs_estimator == "perfect"
+    variant_configs = {
+        name: replace(cfg, channel=replace(cfg.channel, estimator=dmrs_mode),
+                      adaptation=replace(settings, srs_estimator=srs_mode))
+        for name, (srs_mode, dmrs_mode) in (receiver_variants or {}).items()
+    }
+    if variant_configs:
+        codebook_keys = dict.fromkeys(variant_configs, srs_candidates)
+    srs_groups = {}
+    dmrs_modes = {}
+    for name, keys in codebook_keys.items():
+        variant = variant_configs.get(name, cfg)
+        srs_groups.setdefault(variant.adaptation.srs_estimator, {})[name] = keys
+        dmrs_modes[name] = variant.channel.estimator
+    paired_sounding = len(srs_groups) > 1
+    channel_by_dmrs = {variant.channel.estimator: variant.channel for variant in variant_configs.values()}
+    channel_by_dmrs[cfg.channel.estimator] = cfg.channel
     estimator = SrsEstimator(
         cfg.pusch.num_antenna_ports, cfg.carrier.n_size_grid, settings.srs_sequence_id,
         start_symbol=settings.srs_start_symbol if tdd else None,
@@ -491,21 +513,22 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
     measurement_epochs = list(_sounding_epochs(settings, sweep.num_tb_per_snr, start_slot=first_sounding))
     total_slots = measurement_epochs[-1][-1] + 1
     channel = SoundingChannel(
-        cfg, channel_model_factory, estimator, full_sounding_grid=srs_ideal, total_slots=total_slots,
+        cfg, channel_model_factory, estimator, full_sounding_grid="perfect" in srs_groups, total_slots=total_slots,
     )
     slots_per_frame = 10 * cfg.carrier.subcarrier_spacing_khz // 15
     srs_noise = np.random.default_rng(sweep.seed)
     tb_decoder_cache = {}
 
-    @lru_cache(maxsize=128)
-    def link(key, slot_number):
+    @lru_cache(maxsize=128 * len(set(dmrs_modes.values())))
+    def link(dmrs_mode, key, slot_number):
         carrier = replace(cfg.carrier, slot_number=slot_number)
         return PuschLink(
-            replace(cfg, carrier=carrier, pusch=options[key]),
+            replace(cfg, carrier=carrier, pusch=options[key], channel=channel_by_dmrs[dmrs_mode]),
             external_channel=True, tb_decoder_cache=tb_decoder_cache, allow_low_rate=True,
+            phy_graph_cache=phy_graph_cache,
         )
 
-    reference_link = link(next(iter(candidates)), cfg.carrier.slot_number)
+    reference_link = link(next(iter(dmrs_modes.values())), next(iter(candidates)), cfg.carrier.slot_number)
     max_tb_size = max(size for _, size in candidates.values())
     grid = reference_link.resource_grid
     noise_shape = (1, 1, cfg.num_rx_ant, grid.num_ofdm_symbols, grid.fft_size)
@@ -528,7 +551,7 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                 {name: [] for name in codebook_keys},
             ) for snr_db, no in noise_points.items()
         }
-        channel_hash = sha256() if check_stability else None
+        channel_hashes = {mode: sha256() for mode in srs_groups} if check_stability else {}
         phase = "warmup" if calibrating else "measurement"
         progress_interval = max(1, tb_limit // 10)
         for epoch in epochs:
@@ -537,12 +560,17 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                 break
             srs_slot = epoch[0] - slot_offset
             responses = channel.slots(
-                tuple(slot - epoch[0] for slot in epoch), start_slot=epoch[0],
+                tuple(slot - epoch[0] for slot in epoch), start_slot=epoch[0], paired_sounding=paired_sounding,
             )
-            sounding = np.asarray(next(responses))
-            if channel_hash is not None:
-                channel_hash.update(sounding.tobytes())
+            sounding = next(responses)
+            if not paired_sounding:
+                sounding = {next(iter(srs_groups)): sounding}
+            sounding = {mode: np.asarray(sample) for mode, sample in sounding.items()}
+            for mode, digest in channel_hashes.items():
+                digest.update(sounding[mode].tobytes())
             srs_seed = int(srs_noise.integers(0, 2**32))
+            if "real" in sounding:
+                observed, srs_standard_noise = estimator.prepare_pilots(sounding["real"], np.random.default_rng(srs_seed))
             decisions = {}
             for snr_db, state in active.items():
                 if not calibrating:
@@ -551,19 +579,21 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                 state.num_slots = srs_slot + 1
                 state.num_srs_slots += 1
                 noise = float(state.noise_variance)
-                estimate = (
-                    sounding if srs_ideal else
-                    estimator.estimate_from_pilots(sounding, noise, np.random.default_rng(srs_seed))
-                )
                 offsets = None if controllers is None or direct_mcs else {
                     name: controller.margin_offset_db for name, controller in controllers[snr_db].items()
                 }
-                grants = select_grants(
-                    estimate, noise, candidates, None if direct_mcs else thresholds,
-                    settings.sinr_margin_db, codebook_keys,
-                    srs_error_variance=None if srs_ideal else state.srs_error_variance,
-                    margin_offsets_db=offsets,
-                )
+                grants = {}
+                for mode, group in srs_groups.items():
+                    ideal = mode == "perfect"
+                    estimate = sounding[mode] if ideal else estimator.estimate_from_observation(
+                        observed, noise, srs_standard_noise,
+                    )
+                    grants.update(select_grants(
+                        estimate, noise, candidates, None if direct_mcs else thresholds,
+                        settings.sinr_margin_db, group,
+                        srs_error_variance=None if ideal else state.srs_error_variance,
+                        margin_offsets_db=offsets,
+                    ))
                 decisions[snr_db] = grants
                 if not calibrating and (tdd or codebooks is not None):
                     for name, ((rank, tpmi, mcs), sinr_db) in grants.items():
@@ -574,13 +604,18 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                         })
             for absolute_data_slot, response in zip(epoch[1:], responses):
                 data_slot = absolute_data_slot - slot_offset
-                if channel_hash is not None:
-                    channel_hash.update(np.asarray(response[..., 0, 0]).tobytes())
+                if channel_hashes:
+                    channel_bytes = np.asarray(response[..., 0, 0]).tobytes()
+                    for digest in channel_hashes.values():
+                        digest.update(channel_bytes)
                 # DM-RS and scrambling follow the physical slot of the shared CIR timeline.
                 slot_number = (cfg.carrier.slot_number + absolute_data_slot) % slots_per_frame
                 payload, standard_noise = _slot_pusch_inputs(
                     sweep.seed, absolute_data_slot, max_tb_size, noise_shape, response.dtype.real_dtype,
                 )
+                reuse_signal = len(decisions) > 1 or bool(variant_configs)
+                # Within a slot the grant fixes the transmit grid and payload prefix.
+                clean_signals = {}
                 for snr_db, grants in decisions.items():
                     state = states[snr_db]
                     if state.stop_reason != "max_tb":
@@ -590,15 +625,20 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                         candidates, thresholds, settings.sinr_margin_db, direct_mcs,
                     )
                     errors = {}
-                    for key in dict.fromkeys(scheduled.values()):
-                        pusch_link = link(key, slot_number)
+                    decodes = {name: (dmrs_modes[name], key) for name, key in scheduled.items()}
+                    for dmrs_mode, key in dict.fromkeys(decodes.values()):
+                        pusch_link = link(dmrs_mode, key, slot_number)
                         symbols = pusch_link.resource_grid.num_ofdm_symbols
-                        errors[key] = pusch_link.count_block_errors(
-                            1, state.noise_variance, channel_response=response[..., :symbols, :],
-                            payload=payload[..., :pusch_link.tb_size_bits], standard_noise=standard_noise,
+                        response_slice = response[..., :symbols, :]
+                        payload_slice = payload[..., :pusch_link.tb_size_bits]
+                        if reuse_signal and key not in clean_signals:
+                            clean_signals[key] = pusch_link.noiseless_signal(payload_slice, response_slice)
+                        errors[dmrs_mode, key] = pusch_link.count_block_errors(
+                            1, state.noise_variance, channel_response=response_slice, payload=payload_slice,
+                            standard_noise=standard_noise, noiseless_signal=clean_signals.get(key),
                         )
                     for name, key in scheduled.items():
-                        failed = errors[key]
+                        failed = errors[decodes[name]]
                         if controllers is not None:
                             controller = controllers[snr_db][name]
                             before = controller.mcs_state if direct_mcs else None
@@ -621,16 +661,16 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                     state.num_tb += 1
                     state.num_slots = data_slot + 1
                     if sweep.target_block_errors is not None:
-                        state.tb_errors += errors[scheduled[None]]
+                        state.tb_errors += errors[decodes[None]]
                         if state.num_tb >= sweep.min_tb_per_snr and state.tb_errors >= sweep.target_block_errors:
                             state.stop_reason = "target_block_errors"
                 if on_progress is not None:
                     done = min(state.num_tb for state in states.values())
                     if done == tb_limit or done % progress_interval == 0:
                         on_progress(phase, done, tb_limit)
-        return states, channel_hash.hexdigest() if channel_hash is not None else None
+        return states, {mode: digest.hexdigest() for mode, digest in channel_hashes.items()}
 
-    warmup_hash = None
+    warmup_hash = {}
     if controllers is not None:
         warmup, warmup_hash = run_stage(warmup_epochs, olla.warmup_tb, calibrating=True)
         calibration = {
@@ -668,11 +708,22 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
             if on_point is not None:
                 on_point(deepcopy(point)) if name is None else on_point(name, deepcopy(point))
 
-    _build_adaptive_metadata(
-        cfg, metadata, estimator, direct_mcs=direct_mcs, check_stability=check_stability,
-        mcs_indices=mcs_indices, warmup_hash=warmup_hash, measurement_hash=measurement_hash,
-    )
-    metadata["adaptation"]["measurement_start_slot"] = measurement_start
+    def run_metadata(variant, mode):
+        output = metadata.copy()
+        _build_adaptive_metadata(
+            variant, output, estimator, direct_mcs=direct_mcs, check_stability=check_stability,
+            mcs_indices=mcs_indices, warmup_hash=warmup_hash.get(mode), measurement_hash=measurement_hash.get(mode),
+        )
+        output["adaptation"]["measurement_start_slot"] = measurement_start
+        return output
+
+    if variant_configs:
+        return {
+            name: {"config": variant.to_dict(), "metadata": run_metadata(variant, variant.adaptation.srs_estimator),
+                   "points": points[name]}
+            for name, variant in variant_configs.items()
+        }
+    metadata = run_metadata(cfg, settings.srs_estimator)
     if codebooks is None:
         return {"config": cfg.to_dict(), "metadata": metadata, "points": points[None]}
 

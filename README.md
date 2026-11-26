@@ -62,13 +62,13 @@
 > 表中括号内斜体百分比为对应信噪比下的实测评估 BLER（外环目标 10%）；吞吐量为计入全部 TDD 时隙的真实吞吐量（`thp_wall_clock_mbps`）。
 
 <details>
-<summary>点击展开：运行此场景的完整命令（16 核 CPU 参考耗时约 25 分钟）</summary>
+<summary>点击展开：运行此场景的完整命令</summary>
 
 ```bash
-python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
+python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 10
 ```
 
-> 可按本机物理 CPU 核数调整 `--workers`（不影响最终数值）；省略 `--snr` 时默认扫描内置 10 个信噪比点（−26 至 0 dB）。
+> 省略 `--snr` 时默认扫描内置 10 个信噪比点（−26 至 0 dB）；可按本机物理 CPU 核数调整 `--workers`（不超过 SNR 点数，不影响最终数值）。四种 ICE/RCE 组合按 SNR 分组在同一进程内共享物理信道与无噪发射信号，并各自维护独立的接收机与 OLLA 状态。
 
 </details>
 
@@ -149,7 +149,7 @@ pip install -e . --no-deps
 ```
 
 > [!TIP]
-> **100% 纯 Python 运行，无需 MATLAB，也不强制 GPU。** 普通多核 CPU 电脑或服务器均可直接运行，脚本会根据 `--workers` 自动配置 TensorFlow 线程池与 BLAS 单线程环境变量，防止多进程互相争抢核心。
+> **100% 纯 Python 运行，无需 MATLAB，也不强制 GPU。** 普通多核 CPU 电脑或服务器均可直接运行，脚本会根据 `--workers` 自动配置 TensorFlow 线程池与 BLAS 单线程环境变量，防止多进程互相争抢核心；亦可通过 `--tf-intra-threads` / `--tf-inter-threads` 显式微调。
 
 ---
 
@@ -203,8 +203,8 @@ python run_uplink.py --snr=-16,-8,0 --warmup-tb 200 --num-tb 240 --ue-yaw-offset
 # 快速运行（连续信道模式，约 2 分钟）
 python run_ice_rce.py --snr=-26,-20,-12,-4 --warmup-tb 60 --num-tb 60 --channel-evolution continuous --workers 4
 
-# 完整 10 点高精度扫频（示例图 1 同款命令；16 核 CPU 约 25 分钟）
-python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
+# 完整 10 点高精度扫频（示例图 1 的仿真参数）
+python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 10
 ```
 
 ### 4. MCS 表 1 BLER 瀑布图（`run_mcs_waterfall.py`）
@@ -253,9 +253,17 @@ python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_codebooks_l
 | `--snr-step` / `--snr-from` | `run_mcs_waterfall` | 陡降区自动加密步长（`1/0.5/0.25/0.125`）或复用已有 `summary.json` 网格 |
 | `--single` | `run_uplink` | 仅按配置文件自身候选跑单条曲线（不做三码本对比） |
 | `--seed INT` | 全部脚本 | 指定随机种子（更换种子可用于多场景统计平均） |
-| `--workers INT` | 三个 `run_*.py` | 并行进程数，建议不超过本机物理 CPU 核数 |
+| `--workers INT` | 三个 `run_*.py` | 并行进程数上限（上行码本与 ICE/RCE 按 SNR 分组，瀑布图按 MCS 行分组） |
+| `--tf-intra-threads INT` / `--tf-inter-threads INT` | 三个 `run_*.py` | 显式设置每进程的 TensorFlow 算子内 / 算子间线程数（优先于对应环境变量） |
+| `--compile-phy` | `run_uplink` / `run_ice_rce` / `python -m pusch_baseline` | 自适应场景可选：将 PUSCH 发射、信道作用、接收与判错编译为 TensorFlow 图执行（数值与默认模式一致） |
 
 </details>
+
+> [!TIP]
+> **无损仿真加速与并行调优**：
+> - **默认开启的共享复用**：`run_uplink.py` 与 `run_ice_rce.py` 按 SNR 分组在进程内复用 CIR、预处理后的 SRS 导频观测及同授权无噪发射信号；`run_mcs_waterfall.py` 在全功率自适应网格下按需计算实际测量 SNR 的预编码权重，并通过跨进程文件缓存共享。
+> - **可选 TensorFlow 图编译（`--compile-phy`）**：针对长周期自适应仿真，可显式启用 `--compile-phy`（例如 `python run_uplink.py --snr=-12 --compile-phy`）或在 Python API 中传入 `simulate(cfg, compile_phy=True)`，将整条 PUSCH 收发与判错链放入 `tf.function` 图执行（保持逐时隙数值一致）。各进程按链路缓存执行图，首次建图存在追踪开销，同一授权与帧内时隙复用越多，加速越明显。
+> - **线程精细控制**：三个 `run_*.py` 入口支持用 `--tf-intra-threads` 与 `--tf-inter-threads` 覆盖默认线程配置，便于在不同核数与内存带宽机器上压满吞吐。
 
 ---
 
@@ -323,9 +331,9 @@ write_results("results/custom_run", **run, metric="both")
 
 ```text
 .
-├── run_uplink.py                 # 入口 1：三组码本对比（支持 --single / --workers / --channel-evolution / --seed）
-├── run_ice_rce.py                # 入口 2：SRS/DM-RS × ICE/RCE 四曲线对比
-├── run_mcs_waterfall.py          # 入口 3：MCS 表 1 全档位 BLER 瀑布图（支持断点续跑与亚 dB 加密）
+├── run_uplink.py                 # 入口 1：三组码本对比（支持 --single / --workers / --compile-phy / --channel-evolution）
+├── run_ice_rce.py                # 入口 2：SRS/DM-RS × ICE/RCE 四曲线对比（进程内共享 CIR + --compile-phy）
+├── run_mcs_waterfall.py          # 入口 3：MCS 表 1 全档位 BLER 瀑布图（断点续跑、亚 dB 加密与按需权重缓存）
 ├── README.md / README_EN.md      # 中英文说明文档
 ├── LICENSE                       # MIT 开源许可证
 ├── CITATION.cff                  # GitHub 学术引用元数据
@@ -338,11 +346,11 @@ write_results("results/custom_run", **run, metric="both")
     ├── __init__.py               # 公共导出：SimulationConfig, load_config, simulate, simulate_codebook_comparison
     ├── __main__.py               # 单场景 CLI（python -m pusch_baseline / pusch-baseline）
     ├── config.py                 # 配置数据类与严格参数校验
-    ├── link.py                   # 单 UE PUSCH 收发链路封装（含 38.214 精确 TBS 与外部噪声注入）
-    ├── simulation.py             # 固定授权扫频、三码本对比总控与运行时线程配置
-    ├── adaptive_simulation.py    # TDD 物理时隙轴、SRS 周期调度与外环自适应引擎
+    ├── link.py                   # 单 UE PUSCH 收发链路封装（含 38.214 精确 TBS、外部噪声注入与可选 PHY 图缓存）
+    ├── simulation.py             # 固定授权扫频、码本/接收机对比总控与运行时线程 / 图执行配置
+    ├── adaptive_simulation.py    # TDD 物理时隙轴、SRS 周期调度、同槽无噪信号复用与外环自适应引擎
     ├── continuous_channel.py     # 跨周期连续 CIR 采样器与 38.211 常规 CP 符号时钟
-    ├── srs.py                    # 38.211 单多端口循环移位 SRS 序列生成与正交解扩估计
+    ├── srs.py                    # 38.211 单多端口循环移位 SRS 序列生成、跨 SNR 观测复用与正交解扩估计
     ├── adaptation.py             # 12 子载波 PRB Gram 去噪偏与 MI 准则 TPMI/Rank 选择
     ├── dmrs_lmmse.py             # 单流时频可分离 DM-RS LMMSE 信道估计器
     ├── rank_one_detector.py      # 单流无偏 LMMSE 检测与软解调
@@ -352,7 +360,7 @@ write_results("results/custom_run", **run, metric="both")
     ├── throughput_statistics.py  # 95% Bootstrap 吞吐量置信区间与配对差值计算
     ├── outputs.py                # 单场景结果写出（JSON / CSV / PNG）
     ├── comparison_outputs.py     # 三码本对比结果写出与绘图
-    ├── mcs_waterfall_channel.py  # 瀑布图共享物理信道库生成（memmap + SHA-256 指纹）
+    ├── mcs_waterfall_channel.py  # 瀑布图共享物理信道库与跨进程按需预编码权重缓存（memmap + SHA-256 指纹）
     ├── mcs_waterfall.py          # 固定 MCS 曲线自适应加密采样
     ├── mcs_waterfall_plot.py     # 瀑布图绘制（PNG + PDF）
     ├── configs/                  # 7 套内置 JSON 场景配置
@@ -412,7 +420,7 @@ write_results("results/custom_run", **run, metric="both")
 python -m unittest discover -s pusch_baseline/tests -v
 ```
 
-测试套件涵盖多端口循环移位 SRS 正交性、NR 常规 CP 符号时钟与 `ContinuousCir` 连续轨迹、DM-RS LMMSE、3GPP TBS / BG1-BG2 边界与低码率 RV0 编解码（含 MATLAB `nrTBS`/`nrULSCH` 逐比特校验）、TDD 跨阶段相位衔接、按物理时隙配对的 PUSCH 噪声与净荷前缀、在线 OLLA、三窗口稳定性、亚 dB 瀑布图加密与短符号授权切片、运行时线程配置以及 ICE/RCE 对比输出，全部在纯 Python 环境下运行，并由 GitHub Actions CI 自动回归验证。
+测试套件涵盖多端口循环移位 SRS 正交性与跨 SNR 观测复用、NR 常规 CP 符号时钟与 `ContinuousCir` 连续轨迹、DM-RS LMMSE、3GPP TBS / BG1-BG2 边界与低码率 RV0 编解码（含 MATLAB `nrTBS`/`nrULSCH` 逐比特校验）、TDD 跨阶段相位衔接、按物理时隙配对的 PUSCH 噪声与净荷前缀、`--compile-phy` 图执行逐槽一致性、在线 OLLA 与三窗口稳定性、亚 dB 瀑布图加密 / 短符号授权切片 / 按需权重缓存、运行时线程覆盖以及 ICE/RCE 同信道配对输出，全部在纯 Python 环境下运行，并由 GitHub Actions CI 自动回归验证。
 
 ---
 
@@ -435,7 +443,7 @@ python -m unittest discover -s pusch_baseline/tests -v
 <details>
 <summary><b>Q3：运行时间较长的瀑布图如果中途中断，需要从头重跑吗？</b></summary>
 
-不需要。`run_mcs_waterfall.py` 每完成一个 `(MCS, SNR)` 采样点即原子写入进度到 `mcs_checkpoints/` 目录。在同一仿真修订版下，只需使用相同的 `--output-dir` 和运行参数重新执行，脚本会自动核对配置、修订号与信道指纹并无缝续跑；若升级了编码、信道时钟或预编码评分算法，则需指定新的输出目录（历史归档结果仍可直接读取或通过 `--snr-from` 复用其 SNR 网格）。
+不需要。`run_mcs_waterfall.py` 每完成一个 `(MCS, SNR)` 采样点即原子写入进度到 `mcs_checkpoints/` 目录。在同一仿真修订版下，只需使用相同的 `--output-dir` 与仿真参数重新执行，脚本会自动核对配置、修订号与信道指纹后无缝续跑（续跑时可自由调整 `--workers` 与线程数）。在全功率自适应网格模式下，脚本还会按需计算实际测到 SNR 的预编码权重并在 MCS 进程间共享；若升级了编码、信道时钟或预编码评分算法，则需指定新的输出目录（历史归档结果仍可直接读取，或通过 `--snr-from` 复用其 SNR 网格）。
 
 </details>
 

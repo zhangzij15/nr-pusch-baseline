@@ -10,7 +10,7 @@ import sys
 
 from . import load_config, simulate
 from .outputs import target_throughput_report, write_results
-from .simulation import configure_worker_env
+from .simulation import add_adaptive_phy_argument, configure_worker_env
 
 
 def _parse_snr(value: str) -> tuple[float, ...]:
@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-tb", type=int, help="Maximum TB count per SNR.")
     parser.add_argument("--warmup-tb", type=int, help="Override the OLLA calibration TB count per SNR.")
     parser.add_argument("--batch-size", type=int, help="TBs per batch for fixed-grant simulations.")
+    add_adaptive_phy_argument(parser)
     parser.add_argument("--seed", type=int, help="Random seed for the full sweep.")
     parser.add_argument("--metric", choices=("both", "bler", "thp"), default="both",
                         help="Choose which plots to save. CSV/JSON include both metrics.")
@@ -61,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
             }.items() if value is not None
         }
         cfg = replace(cfg, sweep=replace(cfg.sweep, **overrides))
+        if args.compile_phy and cfg.adaptation is None:
+            raise ValueError("--compile-phy requires an adaptive configuration")
         if args.warmup_tb is not None and (cfg.adaptation is None or cfg.adaptation.olla is None):
             raise ValueError("--warmup-tb requires adaptation.olla in the configuration")
         if cfg.adaptation is not None and cfg.adaptation.olla is not None and (
@@ -79,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         if output_dir.exists():
             raise FileExistsError(f"Output directory already exists: {output_dir}")
         configure_worker_env(1)
-        run = simulate(cfg, on_point=_report)
+        run = simulate(cfg, on_point=_report, compile_phy=args.compile_phy)
         saved_dir = write_results(output_dir, **run, metric=args.metric)
         print(f"Saved {saved_dir.resolve()}")
         return 0

@@ -114,6 +114,20 @@ class SrsTests(unittest.TestCase):
         np.testing.assert_allclose(capped_estimate, 2 * full_estimate, rtol=1e-6, atol=1e-7)
         np.testing.assert_allclose(capped.error_variance(0.1), 4 * full.error_variance(0.1))
 
+    def test_prepared_pilots_replay_the_same_noise_at_each_snr(self):
+        estimator = SrsEstimator(4, 4, 3)
+        rng = np.random.default_rng(8)
+        shape = (2, 4, 4, estimator.subcarrier_indices.size)
+        channel = rng.normal(size=shape) + 1j * rng.normal(size=shape)
+        for dtype in (np.complex64, np.complex128):
+            pilots = channel.astype(dtype)
+            observed, noise = estimator.prepare_pilots(pilots, np.random.default_rng(11))
+            for variance in (0.0, 0.03, 10.0):
+                with self.subTest(dtype=dtype, variance=variance):
+                    expected = estimator.estimate_from_pilots(pilots, variance, np.random.default_rng(11))
+                    actual = estimator.estimate_from_observation(observed, variance, noise)
+                    np.testing.assert_array_equal(actual, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

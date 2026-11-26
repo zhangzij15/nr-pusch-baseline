@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import argparse
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 import os
 from typing import Any
@@ -17,13 +18,34 @@ _CODEBOOK_SIZES = {1: (28, 12, 4), 2: (22, 14, 6), 3: (7, 3, 1), 4: (5, 3, 1)}
 _CODEBOOK_NAMES = ("full", "partial_noncoherent", "noncoherent")
 
 
+def _positive_thread_count(value: str) -> int:
+    count = int(value)
+    if count < 1:
+        raise argparse.ArgumentTypeError("thread count must be positive")
+    return count
+
+
+def add_worker_thread_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tf-intra-threads", type=_positive_thread_count,
+                        help="Override TensorFlow threads per operation in each worker.")
+    parser.add_argument("--tf-inter-threads", type=_positive_thread_count,
+                        help="Override TensorFlow threads for concurrent operations in each worker.")
+
+
+def add_adaptive_phy_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--compile-phy", action="store_true",
+                        help="Run adaptive PUSCH transmission, reception, and error counting in TensorFlow graphs.")
+
+
 def configure_worker_env(
     workers: int = 1,
     *,
     intra_threads: int | None = None,
     inter_threads: int | None = None,
+    tf_intra_threads: int | None = None,
+    tf_inter_threads: int | None = None,
 ) -> None:
-    """Populate runtime logging and thread-count environment defaults before TF init."""
+    """Set environment defaults and apply explicit TF thread overrides before initialization."""
     if workers < 1:
         raise ValueError("workers must be positive")
     default_intra = min(os.cpu_count() or 1, 2 if workers > 1 else 4)
@@ -31,6 +53,10 @@ def configure_worker_env(
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(default_intra if intra_threads is None else intra_threads))
     os.environ.setdefault("TF_NUM_INTEROP_THREADS", str(default_inter if inter_threads is None else inter_threads))
+    if tf_intra_threads is not None:
+        os.environ["TF_NUM_INTRAOP_THREADS"] = str(tf_intra_threads)
+    if tf_inter_threads is not None:
+        os.environ["TF_NUM_INTEROP_THREADS"] = str(tf_inter_threads)
     if workers > 1:
         for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(name, "1")
@@ -63,14 +89,16 @@ def simulate(
     *,
     channel_model_factory: Callable[[SimulationConfig, Any], Any] | None = None,
     on_point: Callable[[dict], None] | None = None,
+    compile_phy: bool = False,
 ) -> dict:
     """Return the configuration, link metadata and one result per SNR.
 
     For channel.kind="custom", the factory receives (cfg, resource_grid).
     It returns a Sionna CIR model callable with arguments (batch_size,
     num_time_steps, sampling_frequency) and return value (a, tau).
+    Set compile_phy=True to execute the adaptive PUSCH PHY in TensorFlow graphs.
     """
-    return _simulate(cfg, channel_model_factory, on_point)
+    return _simulate(cfg, channel_model_factory, on_point, compile_phy=compile_phy)
 
 
 def simulate_codebook_comparison(
@@ -79,6 +107,7 @@ def simulate_codebook_comparison(
     channel_model_factory: Callable[[SimulationConfig, Any], Any] | None = None,
     on_point: Callable[[str, dict], None] | None = None,
     on_progress: Callable[[str, int, int], None] | None = None,
+    compile_phy: bool = False,
 ) -> dict:
     """Sweep three standard four-port subsets at cfg.pusch.rank on paired slots."""
     cfg.validate()
@@ -90,11 +119,36 @@ def simulate_codebook_comparison(
     codebooks = {name: range(size) for name, size in zip(_CODEBOOK_NAMES, _CODEBOOK_SIZES[rank])}
     full_candidates = tuple((rank, tpmi) for tpmi in codebooks["full"])
     cfg = replace(cfg, adaptation=replace(cfg.adaptation, rank_tpmi_candidates=full_candidates))
-    return _simulate(cfg, channel_model_factory, on_point, codebooks=codebooks, on_progress=on_progress)
+    return _simulate(
+        cfg, channel_model_factory, on_point, codebooks=codebooks, on_progress=on_progress, compile_phy=compile_phy,
+    )
 
 
-def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progress=None):
+def simulate_receiver_comparison(
+    cfg: SimulationConfig,
+    variants: Mapping[str, tuple[str, str]],
+    *,
+    compile_phy: bool = False,
+) -> dict:
+    """Sweep SRS/DM-RS estimator combinations on shared adaptive slots."""
+    if cfg.adaptation is None or cfg.sweep.target_block_errors is not None:
+        raise ValueError("Receiver comparison requires adaptive grants and fixed TB counts")
+    if not variants:
+        raise ValueError("Receiver comparison requires at least one estimator combination")
+    for srs_estimator, dmrs_estimator in variants.values():
+        replace(
+            cfg,
+            adaptation=replace(cfg.adaptation, srs_estimator=srs_estimator),
+            channel=replace(cfg.channel, estimator=dmrs_estimator),
+        ).validate()
+    return _simulate(cfg, None, None, receiver_variants=variants, compile_phy=compile_phy)
+
+
+def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progress=None,
+              receiver_variants=None, compile_phy=False):
     cfg.validate()
+    if compile_phy and cfg.adaptation is None:
+        raise ValueError("PHY graph execution requires an adaptive configuration")
     if (cfg.channel.kind == "custom") != (channel_model_factory is not None):
         raise ValueError('Provide channel_model_factory exactly when channel.kind is "custom".')
 
@@ -108,7 +162,7 @@ def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progre
     if sionna.__version__ != "1.2.2":
         raise RuntimeError(f"Use Sionna 1.2.2 for this baseline. Found {sionna.__version__}.")
 
-    from .link import PuschLink
+    from .link import PuschLink, make_adaptive_phy_graph_cache
 
     sweep = cfg.sweep
     tf.random.set_seed(sweep.seed)
@@ -128,9 +182,16 @@ def _simulate(cfg, channel_model_factory, on_point, *, codebooks=None, on_progre
     if cfg.adaptation is not None:
         from .adaptive_simulation import simulate_adaptive
 
-        return simulate_adaptive(
-            cfg, metadata, channel_model_factory, on_point, codebooks=codebooks, on_progress=on_progress,
-        )
+        phy_graph_cache = make_adaptive_phy_graph_cache() if compile_phy else None
+        try:
+            return simulate_adaptive(
+                cfg, metadata, channel_model_factory, on_point, codebooks=codebooks, on_progress=on_progress,
+                receiver_variants=receiver_variants, phy_graph_cache=phy_graph_cache,
+            )
+        finally:
+            if phy_graph_cache is not None:
+                # Cached bound methods retain their links until the cache is cleared.
+                phy_graph_cache.cache_clear()
 
     link = PuschLink(cfg, channel_model_factory, allow_low_rate=True)
     points = []

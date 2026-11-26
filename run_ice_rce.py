@@ -14,7 +14,10 @@ import sys
 from pusch_baseline import load_config, simulate
 from pusch_baseline.__main__ import _parse_snr
 from pusch_baseline.outputs import _observed_throughput_field, _plot_bler_targets, write_csv
-from pusch_baseline.simulation import _CODEBOOK_SIZES, configure_worker_env
+from pusch_baseline.simulation import (
+    _CODEBOOK_SIZES, add_adaptive_phy_argument, add_worker_thread_arguments,
+    configure_worker_env, simulate_receiver_comparison,
+)
 from pusch_baseline.throughput_statistics import paired_throughput_differences
 
 
@@ -57,14 +60,20 @@ def _merge_variant_shards(shards: dict[str, dict[float, dict]], snrs) -> dict[st
     return runs
 
 
-def _run_shard(cfg, variant_key: str, srs_est: str, dmrs_est: str, snr_db: float):
+def _run_shard(cfg, variant_key: str, srs_est: str, dmrs_est: str, snr_db: float, *, compile_phy: bool = False):
     shard_cfg = replace(
         cfg,
         channel=replace(cfg.channel, estimator=dmrs_est),
         sweep=replace(cfg.sweep, snr_db=(snr_db,)),
         adaptation=replace(cfg.adaptation, srs_estimator=srs_est),
     )
-    return variant_key, snr_db, simulate(shard_cfg)
+    return (snr_db,), {variant_key: simulate(shard_cfg, compile_phy=compile_phy)}
+
+
+def _run_paired_shard(cfg, snrs, *, compile_phy: bool = False):
+    shard_cfg = replace(cfg, sweep=replace(cfg.sweep, snr_db=snrs))
+    variants = {key: (srs_est, dmrs_est) for key, _, srs_est, dmrs_est in VARIANTS}
+    return snrs, simulate_receiver_comparison(shard_cfg, variants, compile_phy=compile_phy)
 
 
 def _render_ice_rce_figures(runs: dict, throughput_field: str) -> dict[str, bytes]:
@@ -216,7 +225,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--snr", type=_parse_snr, help="Comma-separated SNR list in dB.")
     parser.add_argument("--warmup-tb", type=int, help="Override OLLA warmup TB count per SNR.")
     parser.add_argument("--num-tb", type=int, help="Override evaluation TB count per SNR.")
-    parser.add_argument("--workers", type=int, default=1, help="Parallel (variant, SNR) worker processes.")
+    parser.add_argument("--workers", type=int, default=1, help="Parallel worker processes for paired SNR groups.")
+    add_worker_thread_arguments(parser)
+    add_adaptive_phy_argument(parser)
     parser.add_argument("--tx-power-mode", choices=("full_power", "per_port"),
                         help="Override adaptive PUSCH transmit power mode.")
     parser.add_argument("--ue-yaw-offsets", type=_parse_snr,
@@ -267,29 +278,43 @@ def main(argv: list[str] | None = None) -> int:
         if output_dir.exists():
             raise FileExistsError(f"Output directory already exists: {output_dir}")
 
-        configure_worker_env(args.workers)
-        tasks = [(key, srs_e, dmrs_e, snr) for key, _, srs_e, dmrs_e in VARIANTS for snr in snrs]
-        shards = {key: {} for key, *_ in VARIANTS}
-        print(f"Running {len(tasks)} paired (variant, SNR) shards with {args.workers} worker(s)...", flush=True)
-
-        if args.workers == 1:
-            for done, (key, srs_e, dmrs_e, snr) in enumerate(tasks, start=1):
-                _, _, run = _run_shard(cfg, key, srs_e, dmrs_e, snr)
-                shards[key][snr] = run
-                p = run["points"][0]
-                print(f"[{done:2d}/{len(tasks)}] {key:16s} | SNR {snr:+5g} dB | "
-                      f"BLER {p['bler']:.3f} ({p['tb_errors']}/{p['num_tb']}) | "
-                      f"THP {p[_observed_throughput_field([p])]:.3f} Mbps", flush=True)
+        if cfg.sweep.target_block_errors is None:
+            worker_count = min(args.workers, len(snrs))
+            tasks = [(snrs[i::worker_count],) for i in range(worker_count)]
+            run_task = _run_paired_shard
         else:
-            with ProcessPoolExecutor(max_workers=min(args.workers, len(tasks))) as pool:
-                futures = {pool.submit(_run_shard, cfg, *task): task for task in tasks}
-                for done, fut in enumerate(as_completed(futures), start=1):
-                    key, snr, run = fut.result()
-                    shards[key][snr] = run
-                    p = run["points"][0]
-                    print(f"[{done:2d}/{len(tasks)}] {key:16s} | SNR {snr:+5g} dB | "
-                          f"BLER {p['bler']:.3f} ({p['tb_errors']}/{p['num_tb']}) | "
-                          f"THP {p[_observed_throughput_field([p])]:.3f} Mbps", flush=True)
+            # Error-limited receivers can stop at different TBs.
+            tasks = [(key, srs, dmrs, snr) for key, _, srs, dmrs in VARIANTS for snr in snrs]
+            worker_count = min(args.workers, len(tasks))
+            run_task = _run_shard
+        configure_worker_env(
+            worker_count, tf_intra_threads=args.tf_intra_threads, tf_inter_threads=args.tf_inter_threads,
+        )
+        shards = {key: {} for key, *_ in VARIANTS}
+        total = len(snrs) * len(VARIANTS)
+        done = 0
+        print(f"Running {total} (variant, SNR) points in {len(tasks)} groups with {worker_count} worker(s)...",
+              flush=True)
+
+        def collect(result):
+            nonlocal done
+            group, runs = result
+            for key, run in runs.items():
+                for snr, point in zip(group, run["points"], strict=True):
+                    shards[key][snr] = {**run, "points": [point]}
+                    done += 1
+                    print(f"[{done:2d}/{total}] {key:16s} | SNR {snr:+5g} dB | "
+                          f"BLER {point['bler']:.3f} ({point['tb_errors']}/{point['num_tb']}) | "
+                          f"THP {point[_observed_throughput_field([point])]:.3f} Mbps", flush=True)
+
+        if worker_count == 1:
+            for task in tasks:
+                collect(run_task(cfg, *task, compile_phy=args.compile_phy))
+        else:
+            with ProcessPoolExecutor(max_workers=worker_count) as pool:
+                jobs = [pool.submit(run_task, cfg, *task, compile_phy=args.compile_phy) for task in tasks]
+                for job in as_completed(jobs):
+                    collect(job.result())
 
         runs = _merge_variant_shards(shards, snrs)
 

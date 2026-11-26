@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import lru_cache
 from math import ceil, floor, log2, radians, sqrt
 
 import tensorflow as tf
@@ -255,6 +256,16 @@ def _compiled_tb_decoder(pc, precision, cache):
     return cache[key]
 
 
+def make_adaptive_phy_graph_cache():
+    """Compile bound PHY operations on first use and limit live graph wrappers."""
+    @lru_cache(maxsize=32)
+    def compile_operation(operation):
+        # The bound link fixes the precoder, slot DM-RS and receive estimator.
+        return tf.function(operation, autograph=False, reduce_retracing=True, jit_compile=False)
+
+    return compile_operation
+
+
 # Mid-rate placeholder MCS entries (mcs_table, mcs_index) per QAM modulation
 # order, used only to initialize Sionna's waveform components before substituting
 # the RV0 low-rate TB codec.
@@ -315,7 +326,8 @@ class PuschLink:
     """Single-UE transmitter, channel and receiver for a fixed PUSCH grant."""
 
     def __init__(self, cfg: SimulationConfig, channel_model_factory=None, *,
-                 external_channel=False, tb_decoder_cache=None, allow_low_rate=True):
+                 external_channel=False, tb_decoder_cache=None, allow_low_rate=True, phy_graph_cache=None):
+        self._phy_graph_cache = phy_graph_cache
         pc = _pusch_config(cfg)
         rate_plan = low_rate_plan(pc, allow_low_rate=allow_low_rate)
         tx_config = pc
@@ -395,29 +407,45 @@ class PuschLink:
         return tf.constant(variance, dtype=self._real_dtype)
 
     def count_block_errors(self, batch_size: int, no, *, channel_response=None,
-                           payload=None, standard_noise=None) -> int:
-        failed = self.count_block_errors_tensor(
+                           payload=None, standard_noise=None, noiseless_signal=None) -> int:
+        count_errors = self.count_block_errors_tensor
+        if self._phy_graph_cache is not None and payload is not None and standard_noise is not None:
+            count_errors = self._phy_graph_cache(count_errors)
+        failed = count_errors(
             batch_size, no, channel_response=channel_response, payload=payload, standard_noise=standard_noise,
+            noiseless_signal=noiseless_signal,
         )
         return int(failed.numpy())
 
+    def noiseless_signal(self, payload, channel_response):
+        """Apply the external channel to the power-scaled transmit grid."""
+        transmit = self._noiseless_signal
+        if self._phy_graph_cache is not None:
+            transmit = self._phy_graph_cache(transmit)
+        return transmit(payload, channel_response)
+
+    def _noiseless_signal(self, payload, channel_response):
+        bits = tf.cast(payload, self._real_dtype)
+        return self._apply_ofdm(self._transmitter(bits) * self._tx_amplitude_scale, channel_response)
+
     def count_block_errors_tensor(self, batch_size: int, no, *, channel_response=None,
-                                  payload=None, standard_noise=None) -> tf.Tensor:
+                                  payload=None, standard_noise=None, noiseless_signal=None) -> tf.Tensor:
         """Return the TB error count without reading it back from TensorFlow."""
+        if noiseless_signal is not None and (payload is None or standard_noise is None or self._channel is not None):
+            raise ValueError("A shared noiseless signal requires an external channel, payload and noise")
         if payload is None:
             bits = self._binary_source([batch_size, 1, self.tb_size_bits])
         else:
             bits = tf.cast(payload, self._real_dtype)
-        x = self._transmitter(bits)
         if self._channel is None:
             if channel_response is None:
                 raise ValueError("A frequency response is required for the external channel")
             # Set the transmit power on the data grid and DM-RS before adding noise.
-            grid = x * self._tx_amplitude_scale
             if standard_noise is None:
+                grid = self._transmitter(bits) * self._tx_amplitude_scale
                 y = self._apply_ofdm(grid, channel_response, no)
             else:
-                y = self._apply_ofdm(grid, channel_response)
+                y = self._noiseless_signal(bits, channel_response) if noiseless_signal is None else noiseless_signal
                 tf.debugging.assert_equal(tf.shape(standard_noise), tf.shape(y))
                 sigma = tf.sqrt(expand_to_rank(no, tf.rank(y), axis=-1))
                 y = y + tf.cast(sigma, y.dtype) * tf.cast(standard_noise, y.dtype)
@@ -426,7 +454,7 @@ class PuschLink:
         else:
             if standard_noise is not None:
                 raise ValueError("Explicit receiver noise requires an external channel response")
-            received = self._channel(x, no)
+            received = self._channel(self._transmitter(bits), no)
         if self._perfect_csi:
             y, h = received
             estimated_bits, crc_ok = self._receiver(y, no, h)

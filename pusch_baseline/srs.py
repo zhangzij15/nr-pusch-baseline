@@ -153,21 +153,42 @@ class SrsEstimator:
         self, pilot_channel, noise_variance: float, rng: np.random.Generator
     ) -> np.ndarray:
         """Estimate [subcarrier,RX,TX] from the true channel on active pilot REs."""
+        noise_variance = _checked_noise_variance(noise_variance)
+        if noise_variance == 0:
+            return self.estimate_from_observation(self._pilot_observation(pilot_channel), noise_variance)
+        observed, standard_noise = self.prepare_pilots(pilot_channel, rng)
+        return self.estimate_from_observation(observed, noise_variance, standard_noise)
+
+    def _pilot_observation(self, pilot_channel) -> np.ndarray:
         pilot_channel = np.asarray(pilot_channel)
         expected_tail = (self._num_tx_ports, self._num_symbols, self.subcarrier_indices.size)
         if pilot_channel.ndim != 4 or pilot_channel.shape[0] < 1 or pilot_channel.shape[1:] != expected_tail:
             raise ValueError("SRS pilot channel must have shape [RX,TX,symbol,pilot]")
-        noise_variance = _checked_noise_variance(noise_variance)
         dtype = np.result_type(pilot_channel.dtype, np.complex64)
         port_amplitude = sqrt(self.power_per_port_active_re)
         tx_sequences = (port_amplitude * self.port_sequences).astype(dtype, copy=False)
         # All TX ports transmit simultaneously on every SRS symbol via cyclic-shift CDM.
-        observed = np.einsum("rtmk,tk->rmk", pilot_channel, tx_sequences)
+        return np.einsum("rtmk,tk->rmk", pilot_channel, tx_sequences)
+
+    def prepare_pilots(self, pilot_channel, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+        """Prepare one noiseless observation and Gaussian draw for all SNRs in an epoch."""
+        observed = self._pilot_observation(pilot_channel)
+        real_dtype = observed.real.dtype
+        noise_real = rng.standard_normal(observed.shape, dtype=real_dtype)
+        noise_imag = rng.standard_normal(observed.shape, dtype=real_dtype)
+        return observed, noise_real + 1j * noise_imag
+
+    def estimate_from_observation(
+        self, observed: np.ndarray, noise_variance: float, standard_noise: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Scale the prepared noise and estimate [subcarrier,RX,TX]."""
+        noise_variance = _checked_noise_variance(noise_variance)
         if noise_variance > 0:
-            real_dtype = observed.real.dtype
-            noise = rng.standard_normal(observed.shape, dtype=real_dtype)
-            noise = noise + 1j * rng.standard_normal(observed.shape, dtype=real_dtype)
-            observed = observed + sqrt(noise_variance / 2) * noise
+            if standard_noise is None:
+                raise ValueError("Standardized SRS noise is required for positive noise variance")
+            observed = observed + sqrt(noise_variance / 2) * standard_noise
+        dtype = observed.dtype
+        port_amplitude = sqrt(self.power_per_port_active_re)
         base = self.reference_sequence.astype(dtype, copy=False)
         despread = (observed.mean(axis=1) * base.conj()) / port_amplitude
         blocks = despread.reshape(despread.shape[0], -1, self._num_tx_ports)

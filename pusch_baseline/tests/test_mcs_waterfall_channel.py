@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -13,6 +14,44 @@ from pusch_baseline.mcs_waterfall_channel import write_channel_bank
 
 
 class McsWaterfallChannelTests(unittest.TestCase):
+    def test_deferred_weights_match_eager_weights_and_are_shared_on_demand(self):
+        from pusch_baseline.mcs_waterfall_channel import WaterfallWeights
+
+        cfg = load_config(Path(__file__).resolve().parents[1] / "configs/cdl_c_4t64r_codebooks.json")
+        cfg = replace(
+            cfg,
+            carrier=replace(cfg.carrier, n_size_grid=4),
+            channel=replace(cfg.channel, kind="tdl", num_rx_ant=2, estimator="perfect"),
+            adaptation=replace(cfg.adaptation, srs_period_slots=10, channel_evolution="continuous"),
+        )
+        snrs = [-12.0, -3.0, -20.0]
+        for srs_estimator in ("real", "perfect"):
+            with self.subTest(srs_estimator=srs_estimator), TemporaryDirectory() as temp:
+                scenario = replace(cfg, adaptation=replace(cfg.adaptation, srs_estimator=srs_estimator))
+                eager_dir = Path(temp) / "eager"
+                deferred_dir = Path(temp) / "deferred"
+                eager = write_channel_bank(scenario, snrs, 3, eager_dir)
+                deferred = write_channel_bank(scenario, snrs, 3, deferred_dir, defer_weights=True)
+                self.assertEqual(eager, deferred)
+                self.assertFalse((deferred_dir / "weights.npy").exists())
+                np.testing.assert_array_equal(np.load(eager_dir / "channel.npy"), np.load(deferred_dir / "channel.npy"))
+                np.testing.assert_array_equal(np.load(eager_dir / "slots.npy"), np.load(deferred_dir / "slots.npy"))
+
+                weights = WaterfallWeights(scenario, deferred_dir, deferred)
+                expected = np.load(eager_dir / "weights.npy")
+                np.testing.assert_array_equal(weights[2], expected[2])
+                np.testing.assert_array_equal(weights[0], expected[0])
+                del weights
+                self.assertEqual({p.name for p in deferred_dir.glob("weights_*.npy")},
+                                 {"weights_0.npy", "weights_2.npy"})
+
+                with patch("pusch_baseline.mcs_waterfall_channel.select_grants",
+                           side_effect=AssertionError("Cached weights should not be rescored")):
+                    weights = WaterfallWeights(scenario, deferred_dir, deferred)
+                    np.testing.assert_array_equal(weights[2], expected[2])
+                    np.testing.assert_array_equal(weights[0], expected[0])
+                    del weights
+
     def test_short_grants_decode_from_a_full_slot_channel_bank(self):
         from pusch_baseline.mcs_waterfall import simulate_mcs_curve
 
@@ -89,7 +128,7 @@ class McsWaterfallChannelTests(unittest.TestCase):
             capped_dir = Path(temp) / "capped"
             full = write_channel_bank(cfg, [-12], 4, full_dir)
             capped_cfg = replace(cfg, adaptation=replace(cfg.adaptation, tx_power_mode="per_port"))
-            capped = write_channel_bank(capped_cfg, [-12], 4, capped_dir)
+            capped = write_channel_bank(capped_cfg, [-12], 4, capped_dir, defer_weights=True)
             self.assertEqual(capped["srs_power_per_active_re"], 1.0)
             self.assertEqual(full["physical_sha256"], capped["physical_sha256"])
             power_by_port = np.abs(np.load(capped_dir / "weights.npy"))**2

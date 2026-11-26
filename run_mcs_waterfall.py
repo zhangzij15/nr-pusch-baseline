@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from math import isfinite
+from multiprocessing import get_context
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -20,6 +21,12 @@ DEFAULT_CONFIG = PACKAGE / "configs" / "cdl_c_4t64r_codebooks.json"
 MCS_ROWS = tuple(range(29))
 # The CIR clock, TPMI scoring and transport-block coding affect saved measurements.
 WATERFALL_REVISION = 2
+_weight_locks = ()
+
+
+def _init_worker(weight_locks):
+    global _weight_locks
+    _weight_locks = weight_locks
 
 
 def _run_curve(config, bank, mcs, batch_size, fixed_snrs, directory, min_snr_step=1.0):
@@ -42,7 +49,7 @@ def _run_curve(config, bank, mcs, batch_size, fixed_snrs, directory, min_snr_ste
 
     return simulate_mcs_curve(
         config, bank, mcs, batch_size, on_point=report, snr_points=fixed_snrs,
-        completed_points=completed, min_snr_step=min_snr_step,
+        completed_points=completed, min_snr_step=min_snr_step, weight_locks=_weight_locks,
     )
 
 
@@ -120,12 +127,19 @@ def _write_summary(directory, manifest, bank_metadata, rows):
 
 
 def main():
+    from pusch_baseline.simulation import (
+        add_worker_thread_arguments,
+        apply_tensorflow_threads,
+        configure_worker_env,
+    )
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--num-tb", type=int, default=64, help="Common measured TB count per (MCS, SNR).")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=8)
+    add_worker_thread_arguments(parser)
     parser.add_argument("--mcs", help="Comma-separated row subset for a partial sweep or verification.")
     snr_grid = parser.add_mutually_exclusive_group()
     snr_grid.add_argument("--snr-from", type=Path, help="Reuse the per-MCS SNR points of a waterfall summary.json.")
@@ -147,9 +161,10 @@ def main():
     if not required or not set(required).issubset(MCS_ROWS):
         parser.error("--mcs supports Table 1 indices 0 through 28")
 
-    from pusch_baseline.simulation import apply_tensorflow_threads, configure_worker_env
-
-    configure_worker_env(args.workers, intra_threads=2, inter_threads=1)
+    configure_worker_env(
+        args.workers, intra_threads=2, inter_threads=1,
+        tf_intra_threads=args.tf_intra_threads, tf_inter_threads=args.tf_inter_threads,
+    )
     apply_tensorflow_threads()
 
     from pusch_baseline.config import load_config
@@ -218,6 +233,7 @@ def main():
             print(f"Preparing {args.num_tb} common PUSCH channel samples", flush=True)
             write_channel_bank(
                 cfg, snrs, args.num_tb, Path(temp),
+                defer_weights=not fixed_grid,
                 on_progress=lambda done, total: print(f"Shared channels {done}/{total}", flush=True),
             )
             bank = json.loads((Path(temp) / "bank.json").read_text(encoding="utf-8"))
@@ -227,7 +243,15 @@ def main():
                     raise RuntimeError("rerun produced a different common channel bank")
             else:
                 bank_record.write_text(json.dumps(bank, indent=2) + "\n", encoding="utf-8")
-            with ProcessPoolExecutor(max_workers=min(args.workers, len(pending))) as executor:
+            workers = min(args.workers, len(pending))
+            context = get_context()
+            # An odd stripe count spreads the power-of-two SNR strides across locks.
+            weight_locks = ()
+            if workers > 1 and (Path(temp) / "srs.npy").is_file():
+                weight_locks = tuple(context.Lock() for _ in range(2 * workers + 1))
+            with ProcessPoolExecutor(
+                max_workers=workers, mp_context=context, initializer=_init_worker, initargs=(weight_locks,),
+            ) as executor:
                 jobs = {
                     executor.submit(
                         _run_curve, cfg, temp, mcs, args.batch_size, fixed_grid.get(mcs), checkpoint, args.snr_step,

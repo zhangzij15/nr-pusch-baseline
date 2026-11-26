@@ -1,15 +1,47 @@
 """Tests for the 4-curve SRS/DMRS ICE vs RCE comparison outputs."""
 
 import csv
+from dataclasses import replace
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
+from pusch_baseline import SimulationConfig
+from pusch_baseline.config import AdaptationSettings, OllaSettings
 from run_ice_rce import VARIANTS, write_ice_rce_comparison
 
 
 class IceRceComparisonTests(unittest.TestCase):
+    def test_paired_shard_matches_independent_runs_with_one_cir_per_epoch(self):
+        import run_ice_rce
+        from pusch_baseline.continuous_channel import ContinuousCir
+
+        base = SimulationConfig()
+        cfg = replace(
+            base,
+            carrier=replace(base.carrier, n_size_grid=4),
+            pusch=replace(base.pusch, num_antenna_ports=4, precoding="codebook", mcs_index=5),
+            channel=replace(base.channel, kind="tdl", num_rx_ant=2),
+            sweep=replace(base.sweep, snr_db=(-3.0,), num_tb_per_snr=3),
+            adaptation=AdaptationSettings(
+                tdd_pattern="DSUDD", srs_period_slots=5, channel_evolution="continuous",
+                rank_tpmi_candidates=((1, 0), (1, 3)), mcs_indices=(5, 6),
+                olla=OllaSettings(warmup_tb=3, window_tb=1, max_mcs_spread=1.0),
+            ),
+        )
+        snr = cfg.sweep.snr_db[0]
+        expected = {
+            key: run_ice_rce._run_shard(cfg, key, srs, dmrs, snr)[1][key]
+            for key, _, srs, dmrs in VARIANTS
+        }
+        sample = ContinuousCir.sample
+        with patch.object(ContinuousCir, "sample", autospec=True, side_effect=sample) as calls:
+            _, paired = run_ice_rce._run_paired_shard(cfg, (snr,))
+        self.assertEqual(calls.call_count, 6)
+        self.assertEqual(paired, expected)
+
     def _sample_runs(self):
         snrs = (-26.0, -24.0, -22.0, -20.0, -16.0, -8.0)
         runs = {}

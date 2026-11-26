@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,9 @@ name = "pusch-baseline"
 version = "0.1.0"
 description = "Single-UE 5G NR CP-OFDM PUSCH link-level simulator on Sionna 1.2.2 with single multi-port cyclic-shift SRS, DM-RS LMMSE, continuous CIR evolution, and closed-loop MCS/OLLA adaptation."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Zijian Zhang"}]
 requires-python = ">=3.10,<3.12"
 keywords = [
     "5G-NR",
@@ -37,6 +40,7 @@ pusch-baseline = "pusch_baseline.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/zhangzij15/nr-pusch-baseline"
+Issues = "https://github.com/zhangzij15/nr-pusch-baseline/issues"
 
 [tool.setuptools.packages.find]
 include = ["pusch_baseline*"]

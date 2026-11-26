@@ -4,11 +4,13 @@
 
 **基于 Sionna 1.2.2 的 5G NR CP-OFDM 上行链路级仿真基线平台**
 
+**简体中文** | [English](README_EN.md)
+
+[![CI](https://github.com/zhangzij15/nr-pusch-baseline/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangzij15/nr-pusch-baseline/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Sionna](https://img.shields.io/badge/Sionna-1.2.2-76B900)](requirements.txt)
 [![3GPP NR](https://img.shields.io/badge/3GPP-NR%20Rel--15%2F16-00529B)](https://www.3gpp.org/dynareport/38211.htm)
-[![Channel Mode](https://img.shields.io/badge/CIR-Per--Period%20%26%20Continuous-0EA5E9)](#信道时间演化模式与信道预测接口)
-[![Tests](https://img.shields.io/badge/Unit%20Tests-90%20Pure%20Python-16A34A)](#运行单元测试)
+[![License: MIT](https://img.shields.io/badge/License-MIT-F59E0B)](LICENSE)
 
 <p>
   <a href="#仿真效果示例">仿真效果示例</a> •
@@ -17,7 +19,8 @@
   <a href="#快速上手">快速上手</a> •
   <a href="#信道时间演化模式与信道预测接口">信道预测接口</a> •
   <a href="#目录结构">目录结构</a> •
-  <a href="#内置配置与物理口径">配置与口径</a>
+  <a href="#内置配置与物理口径">配置与口径</a> •
+  <a href="#引用">引用</a>
 </p>
 
 </div>
@@ -49,15 +52,13 @@
 | **−4 / 0 dB** | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* | 15.179 Mbps *(0.0%)* |
 
 <details>
-<summary>点击展开：复现该图的完整命令</summary>
+<summary>点击展开：复现该图的完整命令（16 核 CPU 参考耗时约 25 分钟）</summary>
 
 ```bash
-python run_ice_rce.py \
-  --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json \
-  --warmup-tb 240 --num-tb 300 \
-  --channel-evolution continuous \
-  --workers 16
+python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
 ```
+
+> 可按本机 CPU 核数调整 `--workers`（不影响仿真数值结果）；不指定 `--snr` 时默认扫描内置 10 点网格（−26 到 0 dB）。
 
 </details>
 
@@ -82,14 +83,10 @@ python run_ice_rce.py \
 > 两张示例图都来自 `seed=20261112` 的单条连续信道轨迹，反映的是这一个小尺度实现。如需集合平均的结论，可用不同的 `--seed` 重复运行后汇总，详见文末「统计提示」。
 
 <details>
-<summary>点击展开：复现该图的完整命令（支持断点续算与亚 dB 自适应加密）</summary>
+<summary>点击展开：复现该图的完整命令（支持断点续算，16 核 CPU 参考耗时约 80 分钟）</summary>
 
 ```bash
-python run_mcs_waterfall.py \
-  --num-tb 512 \
-  --snr-step 0.25 \
-  --channel-evolution continuous \
-  --workers 16
+python run_mcs_waterfall.py --num-tb 512 --snr-step 0.25 --channel-evolution continuous --workers 16
 ```
 
 </details>
@@ -122,7 +119,7 @@ flowchart LR
 
 ## 环境安装
 
-需要 **Python 3.10 或 3.11**（与 TensorFlow 2.19 / Sionna 1.2.2 兼容）。推荐使用独立的 Conda 或 `venv` 环境：
+需要 **Python 3.10 或 3.11**（与 TensorFlow 2.19 / Sionna 1.2.2 兼容，暂不支持 Python 3.12+）。推荐使用独立的 Conda 或 `venv` 环境：
 
 ```bash
 # 1. 克隆仓库
@@ -147,14 +144,16 @@ pip install -e . --no-deps
 
 ## 快速上手
 
-所有命令均在**仓库根目录**执行。输出默认写入带时间戳的新目录（位于 `pusch_baseline/results/`，不会覆盖已有结果），包含高清图表、扁平 CSV 与完整无损 `summary.json`。
+所有命令均在**仓库根目录**执行（均写成单行，Linux / macOS / Windows PowerShell / CMD 可直接粘贴）。默认写入带时间戳的新目录，**不会覆盖已有结果**：
+- `python -m pusch_baseline`（或安装后的 `pusch-baseline`）默认输出至 `./results/pusch_<timestamp>/`；
+- `run_uplink.py`、`run_ice_rce.py`、`run_mcs_waterfall.py` 默认输出至 `pusch_baseline/results/`。
 
-| 目标任务 | 入口脚本 | 主要产出 |
-| :--- | :--- | :--- |
-| 快速验证环境是否就绪 | `python -m pusch_baseline` | 冒烟测试（约 5 秒） |
-| 三组上行码本对比（Full / Partial / Non-coherent） | `python run_uplink.py` | 吞吐量/BLER 对比图 + 配对差值表 |
-| SRS / DM-RS 的 ICE vs RCE 四曲线对比 | `python run_ice_rce.py` | 含低 SNR 放大图的 THP/BLER 对比图 |
-| MCS 表 1（0–28）全档位 BLER 瀑布图 | `python run_mcs_waterfall.py` | 29 曲线瀑布图（PNG + PDF，支持断点续算） |
+| 目标任务 | 入口脚本 | 主要产出 | 参考耗时（多核 CPU） |
+| :--- | :--- | :--- | :---: |
+| 快速验证环境是否就绪 | `python -m pusch_baseline` | 冒烟测试结果与图表 | ~5 秒 |
+| 三组上行码本对比（Full / Partial / Non-coherent） | `python run_uplink.py` | 吞吐量/BLER 对比图 + 配对差值表 | 1–10 分钟 |
+| SRS / DM-RS 的 ICE vs RCE 四曲线对比 | `python run_ice_rce.py` | 含低 SNR 放大图的 THP/BLER 对比图 | 2–25 分钟 |
+| MCS 表 1（0–28）全档位 BLER 瀑布图 | `python run_mcs_waterfall.py` | 29 曲线瀑布图（PNG + PDF，支持断点续算） | 15–80 分钟 |
 
 > [!NOTE]
 > 当 `--snr` 或 `--snr-db` 以负数开头时，请使用等号连接（例如 `--snr=-16,-8,0`），避免命令行解析器将负号误判为选项标志。
@@ -165,6 +164,8 @@ pip install -e . --no-deps
 python -m pusch_baseline --snr=-25,25 --num-tb 4 --batch-size 2
 ```
 
+（执行过 `pip install -e . --no-deps` 后，也可直接运行 `pusch-baseline --snr=-25,25 --num-tb 4 --batch-size 2`。）
+
 ### 2. 三组上行码本对比（`run_uplink.py`）
 
 默认加载 [cdl_c_4t64r_codebooks.json](pusch_baseline/configs/cdl_c_4t64r_codebooks.json)（4T64R CDL-C、48 PRB、`DSUDD`、Rank 1、目标 BLER 10%），在共享信道上同步评估 **Full（TPMI 0–27）**、**Partial + Non-coherent（TPMI 0–11）** 与 **Non-coherent only（TPMI 0–3）**：
@@ -173,29 +174,26 @@ python -m pusch_baseline --snr=-25,25 --num-tb 4 --batch-size 2
 # 快速预览
 python run_uplink.py --snr=-16,-8,0 --warmup-tb 30 --num-tb 20
 
-# 默认配置并行运行
-python run_uplink.py --workers 4
+# 默认配置并行运行（可加 --seed 换信道实现）
+python run_uplink.py --workers 4 --seed 20261112
 
 # 跨 SRS 周期连续信道演化模式
-python run_uplink.py --snr=-16,-8,0 --warmup-tb 100 --num-tb 200 --workers 3 \
-  --channel-evolution continuous
+python run_uplink.py --snr=-16,-8,0 --warmup-tb 100 --num-tb 200 --channel-evolution continuous --workers 3
 
 # 敏感性分析：随机 UE 方位角 + Rel-15 逐端口功率上限（per_port）
-python run_uplink.py --snr=-16,-8,0 --warmup-tb 200 --num-tb 240 --workers 3 \
-  --ue-yaw-offsets=0,30,60,90,120,150,180,210,240,270,300,330 \
-  --tx-power-mode per_port
+python run_uplink.py --snr=-16,-8,0 --warmup-tb 200 --num-tb 240 --ue-yaw-offsets=0,30,60,90,120,150,180,210,240,270,300,330 --tx-power-mode per_port --workers 3
 ```
 
 ### 3. SRS / DM-RS 的 ICE vs RCE 四曲线对比（`run_ice_rce.py`）
 
-```bash
-# 快速运行（连续演化模式）
-python run_ice_rce.py --snr=-26,-20,-12,-4 --warmup-tb 60 --num-tb 60 \
-  --channel-evolution continuous --workers 4
+未指定 `--snr` 时，默认扫描内置 10 点网格（`−26, −24, −22, −20, −16, −12, −8, −6, −4, 0 dB`）：
 
-# 完整 10 点高精度扫频（示例图 1 同款命令）
-python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json \
-  --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 8
+```bash
+# 快速运行（连续演化模式，约 2 分钟）
+python run_ice_rce.py --snr=-26,-20,-12,-4 --warmup-tb 60 --num-tb 60 --channel-evolution continuous --workers 4
+
+# 完整 10 点高精度扫频（示例图 1 同款命令；16 核 CPU 约 25 分钟，可按核数调整 --workers）
+python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
 ```
 
 ### 4. MCS 表 1 BLER 瀑布图（`run_mcs_waterfall.py`）
@@ -206,13 +204,11 @@ python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long
 # 快速 29 档瀑布图（1 dB 步长）
 python run_mcs_waterfall.py --num-tb 128 --channel-evolution continuous --workers 8
 
-# 高精度平滑 29 档瀑布图（512 TB + 0.25 dB 自适应加密，示例图 2 同款命令）
+# 高精度平滑 29 档瀑布图（512 TB + 0.25 dB 自适应加密，示例图 2 同款命令；16 核 CPU 约 80 分钟）
 python run_mcs_waterfall.py --num-tb 512 --snr-step 0.25 --channel-evolution continuous --workers 16
 
 # 仅测量局部 MCS 档位与指定估计器（ls / lmmse / perfect）
-python run_mcs_waterfall.py --mcs 9,10 --estimator lmmse \
-  --snr-db=-25,-23,-21,-19,-17,-15 --num-tb 128 --workers 2 \
-  --output-dir pusch_baseline/results/dmrs_lmmse_check
+python run_mcs_waterfall.py --mcs 9,10 --estimator lmmse --snr-db=-25,-23,-21,-19,-17,-15 --num-tb 128 --workers 2 --output-dir pusch_baseline/results/dmrs_lmmse_check
 ```
 
 ### 5. 单场景命令行（`python -m pusch_baseline`）
@@ -228,6 +224,25 @@ python -m pusch_baseline --config pusch_baseline/configs/tdl_2x2.json --metric t
 python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_dsudd.json --snr=0 --num-tb 5
 ```
 
+<details>
+<summary>点击展开：常用命令行参数速查表</summary>
+
+| 参数 | 适用脚本 | 说明 |
+| :--- | :--- | :--- |
+| `--config PATH` | 全部脚本 | 指定 JSON 场景配置文件 |
+| `--output-dir PATH` | 全部脚本 | 指定输出目录（除瀑布图断点续算外需为不存在的新目录） |
+| `--snr` / `--snr-db` | 全部脚本 | 覆盖 SNR 列表，负值开头需用等号（如 `--snr=-20,-12,-4`） |
+| `--warmup-tb` / `--num-tb` | `run_uplink` / `run_ice_rce` | 覆盖预热 / 评估 TB 数；长配置开启稳定性门限时会自动收紧 `window_tb` |
+| `--channel-evolution` | 三个 `run_*.py` | 切换 `per_period`（每周期独立衰落）或 `continuous`（跨周期连续轨迹） |
+| `--tx-power-mode` | `run_uplink` / `run_ice_rce` | 切换 `full_power`（Rel-16 满功率）或 `per_port`（Rel-15 逐端口上限） |
+| `--ue-yaw-offsets` | `run_uplink` / `run_ice_rce` | CDL 终端方位角随机偏移集合（度） |
+| `--snr-step` / `--snr-from` | `run_mcs_waterfall` | 亚 dB 自适应步长（`1/0.5/0.25/0.125`）或复用已有 `summary.json` 的网格 |
+| `--single` | `run_uplink` | 仅按配置文件自身候选运行单曲线扫频（不做三码本对比） |
+| `--seed INT` | 全部脚本 | 覆盖信道、SRS 噪声与数据载荷的随机种子（用于多 drop 平均） |
+| `--workers INT` | 三个 `run_*.py` | 并行进程数，建议不超过本机物理 CPU 核数 |
+
+</details>
+
 ---
 
 ## 信道时间演化模式与信道预测接口
@@ -241,29 +256,30 @@ python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_dsudd.json 
 
 ### 直接抽取连续 SRS 观测与真实 PUSCH 信道序列
 
-如需为 AI/传统信道预测算法构造连续时间序列，可直接调用 `SoundingChannel`（底层 `ContinuousCir` 按需解析计算任意符号时刻，超长序列也不会爆内存）：
+如需为 AI/传统信道预测算法构造连续时间序列，可直接调用 `SoundingChannel` 与 `sounding_epochs`（底层 `ContinuousCir` 按需解析计算任意符号时刻，超长序列也不会爆内存）：
 
 ```python
 from dataclasses import replace
 import numpy as np
 from pusch_baseline import load_config
-from pusch_baseline.adaptive_simulation import SoundingChannel, _sounding_epochs
+from pusch_baseline.adaptive_simulation import SoundingChannel, sounding_epochs
 from pusch_baseline.srs import SrsEstimator
 
 cfg = load_config("pusch_baseline/configs/cdl_c_4t64r_codebooks.json")
 cfg = replace(cfg, adaptation=replace(cfg.adaptation, channel_evolution="continuous"))
 srs = SrsEstimator(4, cfg.carrier.n_size_grid, cfg.adaptation.srs_sequence_id, start_symbol=10)
-epochs = list(_sounding_epochs(cfg.adaptation, tb_limit=20))   # DSUDD: SRS 每 5 个时隙一次
+epochs = list(sounding_epochs(cfg.adaptation, tb_limit=20))      # DSUDD: SRS 每 5 个时隙一次
 # total_slots 仅 custom 信道需要（预生成整条轨迹）；内置 CDL/TDL 为解析计算，可省略
 stream = SoundingChannel(cfg, None, srs, total_slots=epochs[-1][-1] + 1)
 rng = np.random.default_rng(cfg.sweep.seed)
+noise_var = 10.0 ** (-(-10.0) / 10.0)                            # 参考 SNR = -10 dB 对应的噪声方差
 
 for epoch in epochs:
     srs_slot = epoch[0]
     slots = stream.slots(tuple(s - srs_slot for s in epoch), start_slot=srs_slot)
     pilots = np.asarray(next(slots))                             # [RX, TX, 4, M_pilot]
-    h_srs_hat = srs.estimate_from_pilots(pilots, 10.0, rng)      # [K, RX, TX] 噪声 SRS 估计
-    h_pusch_true = [np.asarray(h) for h in slots]                # 后续各 U 槽真实频域信道
+    h_srs_hat = srs.estimate_from_pilots(pilots, noise_var, rng) # [K, RX, TX] 噪声 SRS 估计
+    h_pusch_true = [np.asarray(h) for h in slots]                # 每个元素形状 [1, 1, RX, 1, TX, 14, K]
 ```
 
 ### Python 编程调用与自定义信道模型
@@ -291,16 +307,20 @@ write_results("results/custom_run", **run, metric="both")
 
 ```text
 .
-├── run_uplink.py                 # 一键入口：三组码本对比（支持 --single / --workers / --channel-evolution）
+├── run_uplink.py                 # 一键入口：三组码本对比（支持 --single / --workers / --channel-evolution / --seed）
 ├── run_ice_rce.py                # 一键入口：SRS/DMRS × ICE/RCE 四曲线对比
-├── run_mcs_waterfall.py          # 一键入口：MCS 表 1 全档位 BLER 瀑布图（支持断点续算）
+├── run_mcs_waterfall.py          # 一键入口：MCS 表 1 全档位 BLER 瀑布图（支持断点续算与亚 dB 加密）
+├── README.md / README_EN.md      # 中英文使用文档
+├── LICENSE                       # MIT 开源许可证
+├── CITATION.cff                  # GitHub 学术引用元数据
 ├── requirements.txt              # 固定版本依赖清单
 ├── pyproject.toml                # Python 包元信息与 CLI 入口
+├── .github/workflows/ci.yml      # GitHub Actions 自动单元测试工作流
 ├── docs/
 │   └── figures/                  # README 示例图（两张精选连续信道仿真图）
 └── pusch_baseline/
     ├── __init__.py               # 公共导出：SimulationConfig, load_config, simulate, simulate_codebook_comparison
-    ├── __main__.py               # 单场景 CLI（python -m pusch_baseline）
+    ├── __main__.py               # 单场景 CLI（python -m pusch_baseline / pusch-baseline）
     ├── config.py                 # 冻结 dataclass 配置定义与严格校验
     ├── link.py                   # 单 UE PUSCH 链路封装（发射、信道、估计器、检测器、译码器）
     ├── simulation.py             # 固定授权扫频与三码本对比总控
@@ -320,7 +340,7 @@ write_results("results/custom_run", **run, metric="both")
     ├── mcs_waterfall.py          # 固定 MCS 曲线自适应加密采样
     ├── mcs_waterfall_plot.py     # 瀑布图绘制（PNG + PDF）
     ├── configs/                  # 7 套内置 JSON 场景配置
-    └── tests/                    # 90 项纯 Python 单元测试
+    └── tests/                    # 纯 Python 单元测试套件
 ```
 
 ---
@@ -357,7 +377,7 @@ write_results("results/custom_run", **run, metric="both")
 
 - **参考 SNR**：定义为单位 UE 名义发射数据 RE 功率预算（预编码与信道之前）与每根接收天线单个复数 RE 加性噪声方差之比，即 $\sigma_n^2 = 10^{-\text{SNR}_{\text{dB}}/10}$。64 接收天线带来约 18 dB 阵列合并增益，叠加 38.901 阵元方向图增益后，有效工作区间位于负参考 SNR。
 - **发射功率模式**：
-  - `full_power`（默认）：PUSCH 按 $1/\|W\|_F$ 归一化，所有 TPMI 总数据 RE 功率均为 1（对应 Rel-16 满功率能力）。
+  - `full_power`（默认）：PUSCH 按 $1/\lVert W \rVert_F$ 归一化，所有 TPMI 总数据 RE 功率均为 1（对应 Rel-16 满功率能力）。
   - `per_port`：限制每个物理发射端口数据 RE 平均功率不超过 $1/N_{\text{TX}}$（对应 Rel-15 均分功放预算；4 端口 Rank 1 非相干/部分相干/全相干总功率分别为 0.25 / 0.5 / 1.0）。
   - 两种模式下，单 $N_{\text{TX}}$ 端口 SRS 资源均由全部端口同时发射，每端口活跃 RE 功率为 $1/N_{\text{TX}}$、全端口合计为 1。
   - SRS 每个**活跃 RE** 的功率与 PUSCH 数据 RE 相同；comb-2 只占一半子载波，因此 SRS 符号总能量为 PUSCH 的一半。相对 38.213 等符号功率口径，SRS 的 RE 级 SNR 保守约 3 dB。
@@ -373,7 +393,7 @@ write_results("results/custom_run", **run, metric="both")
 python -m unittest discover -s pusch_baseline/tests -v
 ```
 
-全部 **90 项单元测试**（覆盖单多端口循环移位 SRS 正交性、与 Sionna 原生轨迹位级一致的 `ContinuousCir`、DM-RS LMMSE、低码率 RV0 编解码、在线 OLLA、三窗口稳定性、亚 dB 瀑布图网格/断点续算及 ICE/RCE 输出）均可在纯 Python 环境中独立运行。
+测试套件覆盖单多端口循环移位 SRS 正交性、与 Sionna 原生轨迹位级一致的 `ContinuousCir`、DM-RS LMMSE、低码率 RV0 编解码、在线 OLLA、三窗口稳定性、亚 dB 瀑布图网格/断点续算及 ICE/RCE 输出，均在纯 Python 环境下独立运行并由 GitHub Actions CI 自动验证。
 
 ---
 
@@ -382,7 +402,7 @@ python -m unittest discover -s pusch_baseline/tests -v
 <details>
 <summary><b>Q1：是否需要安装 MATLAB 或 CUDA GPU？</b></summary>
 
-不需要。所有仿真脚本与 90 项单元测试均为纯 Python 运行，不依赖 MATLAB 工具箱；在无 GPU 的多核 CPU 机器上即可运行，通过 `--workers N` 即可自动分配多进程与 TensorFlow/BLAS 线程。
+不需要。所有仿真脚本与单元测试均为纯 Python 运行，不依赖 MATLAB 工具箱；在无 GPU 的多核 CPU 机器上即可运行，通过 `--workers N` 即可自动分配多进程与 TensorFlow/BLAS 线程。如果安装依赖失败，请优先确认 Python 版本为 **3.10 或 3.11**。
 
 </details>
 
@@ -418,3 +438,19 @@ python -m unittest discover -s pusch_baseline/tests -v
   - `channel_evolution="continuous"` 时，CDL/TDL 的 drop 级随机量（射线耦合、初始相位、移动方向）在整条轨迹上只抽取一次，因此一次运行对应**单个小尺度信道实现**（由 `sweep.seed` 决定）。要得到集合平均结论，请用多个 `--seed`/`sweep.seed` 重复运行后汇总。
   - 相邻 SRS 周期在连续模式下时间相关，按 SRS 周期重采样的 95% bootstrap 区间只反映当前轨迹上的观测波动，会偏窄。
 - **参考标准**：[3GPP TS 38.211](https://www.3gpp.org/dynareport/38211.htm) · [TS 38.212](https://www.3gpp.org/dynareport/38212.htm) · [TS 38.213](https://www.3gpp.org/dynareport/38213.htm) · [TS 38.214](https://www.3gpp.org/dynareport/38214.htm) · [TR 38.901](https://www.3gpp.org/dynareport/38901.htm) · [Sionna 1.2.2 PUSCH 教程](https://nvlabs.github.io/sionna/v1.2.2/phy/tutorials/5G_NR_PUSCH.html)。
+
+---
+
+## 引用
+
+如果本仿真基线对你的研究有所帮助，欢迎通过 GitHub 右侧栏 **Cite this repository**（[CITATION.cff](CITATION.cff)）或以下 BibTeX 引用，本项目基于 [MIT License](LICENSE) 开源：
+
+```bibtex
+@software{zhang2026nr_pusch_baseline,
+  author  = {Zijian Zhang},
+  title   = {5G NR PUSCH Link-Level Simulation Baseline},
+  year    = {2026},
+  version = {0.1.0},
+  url     = {https://github.com/zhangzij15/nr-pusch-baseline}
+}
+```

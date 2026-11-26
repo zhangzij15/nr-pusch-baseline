@@ -220,6 +220,9 @@ def _sounding_epochs(settings, tb_limit):
                 return
 
 
+sounding_epochs = _sounding_epochs
+
+
 def _grant_configurations(cfg, mcs_indices):
     options = {}
     candidates = {}

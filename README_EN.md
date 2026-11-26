@@ -26,22 +26,26 @@
 
 ---
 
-A pure-Python 5G NR CP-OFDM PUSCH link-level simulator built on **Sionna 1.2.2**, focused on **4T64R uplink codebook precoding**, **SRS / DM-RS channel estimation comparisons (ICE vs. RCE)**, **continuous cross-period channel evolution for CSI prediction**, and **full MCS Table 1 (0–28) BLER waterfalls**. All sweeps use strictly paired physical CIR trajectories across SNRs, codebooks, and estimators, reporting 95% SRS-period bootstrap confidence intervals and paired throughput differences.
+A pure-Python **5G NR CP-OFDM uplink (PUSCH) link-level simulator** built on NVIDIA **Sionna 1.2.2**.
+
+Whether you are benchmarking **4T64R uplink codebook precoding**, comparing **SRS / DM-RS channel estimators (ICE vs. RCE)**, evaluating **CSI prediction** over time-varying channels, or generating **full MCS 0–28 BLER waterfalls**, this repository provides a clean, reproducible baseline. All comparisons reuse identical physical channel trajectories and noise draws across SNRs, codebooks, and estimators, and report 95% bootstrap throughput confidence intervals.
 
 ---
 
 ## Visual Showcase
 
-Both figures below were generated directly by the repository scripts under **4T64R CDL-C, 48 PRBs (30 kHz SCS), `DSUDD` TDD, 6.7 GHz, 3 km/h, Rank 1 full codebook (TPMI 0–27), `full_power` mode**, with **`--channel-evolution continuous`**.
+Both figures below were generated directly by the repository scripts under **4T64R CDL-C, 48 PRBs (30 kHz SCS), `DSUDD` TDD, 6.7 GHz, 3 km/h walking speed, Rank-1 full codebook (TPMI 0–27), and `full_power` mode**, with **`--channel-evolution continuous`**.
 
-### 1. SRS & DM-RS Ideal (ICE) vs. Real (RCE) Channel Estimation Throughput
+### 1. Ideal (ICE) vs. Real (RCE) Channel Estimation Throughput
 
 <p align="center">
   <img src="docs/figures/thp_vs_snr_ice_rce_continuous.png" alt="PUSCH Throughput vs SNR | SRS and DM-RS ICE vs RCE | Continuous CIR" width="94%">
 </p>
 
-- **Setup**: Single 4-port cyclic-shift SRS resource (comb-2, 4 repeated symbols, cyclic shifts `0/2/4/6`) transmitted every `S` slot (5-slot / 2.5 ms period), Rank-1 separable time-frequency DM-RS LMMSE, 10% target BLER, 240 warmup + 300 evaluation TBs (~1.35 s continuous trajectory, single drop `seed=20261112`).
-- **Takeaway**: At −26 dB, `SRS ICE + DMRS ICE` (2.125 Mbps) outperforms `SRS RCE + DMRS RCE` (1.619 Mbps) by **0.507 Mbps** (~0.299 Mbps from DM-RS estimation error and ~0.178 Mbps from SRS estimation error; paired 95% CIs exclude zero). All four curves converge to the MCS 28 ceiling (**15.179 Mbps**) from −4 dB onward.
+> `ICE` assumes ideal channel knowledge, while `RCE` uses noisy pilot-based estimation. Plotting all four combinations separates **SRS (precoder selection)** losses from **DM-RS (data demodulation)** losses at a glance.
+
+- **Setup**: 4 TX ports share a single SRS resource (comb-2, 4 repeated symbols, orthogonal cyclic shifts `0/2/4/6`) sent every `S` slot (5-slot / 2.5 ms period); Rank-1 separable time-frequency DM-RS LMMSE; 10% target BLER; 240 warmup + 300 evaluation TBs (~1.35 s continuous trajectory, single drop `seed=20261112`).
+- **Takeaway**: At −26 dB, `SRS ICE + DMRS ICE` (2.125 Mbps) beats `SRS RCE + DMRS RCE` (1.619 Mbps) by **0.507 Mbps** (~0.299 Mbps from DM-RS error and ~0.178 Mbps from SRS error; both statistically significant). As SNR increases, estimation loss shrinks and all four curves reach the MCS 28 ceiling (**15.179 Mbps**) from −4 dB onward.
 
 | Reference SNR | SRS ICE + DMRS ICE | SRS RCE + DMRS ICE | SRS ICE + DMRS RCE | SRS RCE + DMRS RCE |
 | :---: | :---: | :---: | :---: | :---: |
@@ -67,8 +71,8 @@ python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long
   <img src="docs/figures/bler_waterfall_mcs_table1_continuous.png" alt="NR PUSCH BLER Waterfall | MCS Table 1 | Continuous CIR" width="98%">
 </p>
 
-- **Setup**: Fixed MCS 0–28 (QPSK / 16-QAM / 64-QAM) evaluated on a shared continuous physical channel bank of **512 continuous TBs** (~1.28 s, single drop) with `--snr-step 0.25` adaptive sub-dB refinement (429 measured `(MCS, SNR)` points), noisy 4-port SRS TPMI selection, and DM-RS LMMSE. Triangles mark the first zero-error point per MCS (nominal 95% binomial upper bound $5.8\times 10^{-3}$).
-- **Takeaway**: All 29 curves drop cleanly to $10^{-2}$–$2\times 10^{-3}$ (lowest nonzero BLER $\le 2.9\%$ across every MCS) with monotonic 10% BLER knees spanning > 22 dB (−28.0 to −5.5 dB). DM-RS LMMSE eliminates LS amplitude-compression inversion: QPSK MCS 9 and 16-QAM MCS 10 are separated by only **0.22 dB** at 10% BLER.
+- **Setup**: Fixed MCS 0–28 (QPSK / 16-QAM / 64-QAM) evaluated on a shared continuous channel bank of **512 continuous TBs** (~1.28 s, single drop) with `--snr-step 0.25` adaptive refinement on steep drop-offs (429 measured points), noisy 4-port SRS TPMI selection, and DM-RS LMMSE. Downward triangles mark the first zero-error point per MCS (nominal 95% upper bound ~0.58%).
+- **Takeaway**: All 29 curves drop cleanly below 1% BLER (lowest nonzero BLER is at most 2.9% across the whole table, reaching 0.2%–1% on most rows), spanning > 22 dB (−28.0 to −5.5 dB) with strictly monotonic 10% BLER knees. Because DM-RS LMMSE removes LS amplitude compression, QPSK MCS 9 and 16-QAM MCS 10 are only **0.22 dB** apart at 10% BLER with no modulation-boundary inversion.
 
 | Representative MCS | Modulation | TBS (bits) | 10% BLER Reference SNR |
 | :---: | :---: | :---: | :---: |
@@ -94,21 +98,21 @@ python run_mcs_waterfall.py --num-tb 512 --snr-step 0.25 --channel-evolution con
 
 ```mermaid
 flowchart LR
-  CIR["3GPP Channel Models<br/>AWGN / TDL / CDL / Custom<br/>per_period & continuous"] --> SRS["Multi-Port SRS Sounding<br/>38.211 comb-2 + cyclic-shift CDM<br/>RCE & ICE"]
-  SRS --> LA["Link Adaptation<br/>PRB Gram debiasing + MI SINR<br/>TPMI / Rank Selection"]
-  LA --> TX["Sionna NR PUSCH TX<br/>Scrambling / QAM / Codebook / DM-RS<br/>LDPC + Low-Rate RV0"]
+  CIR["3GPP Channel Models<br/>AWGN / TDL / CDL / Custom<br/>per_period & continuous"] --> SRS["Multi-Port SRS Sounding<br/>comb-2 + cyclic-shift CDM<br/>RCE & ICE"]
+  SRS --> LA["Link Adaptation<br/>Debiased PRB Gram + MI SINR<br/>TPMI / Rank Selection"]
+  LA --> TX["Sionna NR PUSCH TX<br/>LDPC / Scrambling / QAM / Codebook<br/>Low-Rate RV0 Extension"]
   CIR --> TX
-  TX --> RX["Receiver<br/>DM-RS LMMSE / LS / Perfect CSI<br/>Unbiased Rank-1 LMMSE + LDPC"]
-  RX -->|"ACK/NACK feedback"| MCS["Online MCS / OLLA<br/>Continuous MCS ladder / SINR margin"]
+  TX --> RX["Receiver<br/>DM-RS LMMSE / LS / Perfect CSI<br/>Unbiased Rank-1 Detection + LDPC"]
+  RX -->|"ACK/NACK feedback"| MCS["Online MCS / OLLA<br/>Tracks target BLER"]
   MCS --> TX
-  RX --> OUT["Metrics & Outputs<br/>BLER / Wall-Clock THP / 95% CI<br/>Paired diffs / PNG / PDF / CSV / JSON"]
+  RX --> OUT["Metrics & Outputs<br/>BLER / Wall-Clock THP / 95% CI<br/>PNG / PDF / CSV / JSON"]
 ```
 
-- **Standard NR PUSCH PHY**: Native Sionna 1.2.2 transmitter/receiver plus an RV0 low-rate LDPC rate-matching extension covering all MCS Table 1 rows (0–28), bit-verified against MATLAB 5G Toolbox `nrULSCH`.
-- **Single Multi-Port Cyclic-Shift SRS** (TS 38.211 §6.4.1.4 & TS 38.214 §6.1.1.1): 1/2/4 TX ports share one comb-2, $B_{\text{SRS}}=0$, non-hopping resource across 1/2/4 consecutive repeated symbols via orthogonal cyclic shifts (`0` / `0,4` / `0,2,4,6`) with equal per-port power $1/N_{\text{ap}}$; supports real (RCE) and ideal (`srs_estimator="perfect"`) sounding.
-- **Separable Time-Frequency DM-RS LMMSE**: Exponential PDP + Jakes Doppler prior with empirical power scaling and unbiased `RankOneDetector`, alongside native LS and perfect CSI.
-- **Continuous Cross-Period Channel Evolution**: `ContinuousCir` analytically evaluates Sionna CDL/TDL (and custom) trajectories at exact OFDM symbol timestamps `slot * 14 + sym` with $O(1)$ memory across warmup and measurement.
-- **Strict Pairing & Bootstrap Statistics**: Identical CIR realizations and standardized SRS noise shared across SNRs, codebooks, and estimator variants, with 95% SRS-period bootstrap CIs and paired difference tables.
+- **Standard NR PUSCH PHY**: Native Sionna 1.2.2 uplink chain plus a low-rate RV0 LDPC rate-matching extension covering all 29 rows of MCS Table 1 (0–28), bit-verified against MATLAB 5G Toolbox `nrULSCH`.
+- **Single Multi-Port Cyclic-Shift SRS** (TS 38.211 §6.4.1.4 & TS 38.214 §6.1.1.1): 1/2/4 TX ports share one comb-2, `B_SRS = 0`, non-hopping resource across 1/2/4 consecutive repeated symbols via orthogonal cyclic shifts (`0` / `0,4` / `0,2,4,6`), splitting total power equally ( $1 / N_{\mathrm{ap}}$ per port); supports both noisy real estimation (RCE) and ideal sounding (`srs_estimator="perfect"`).
+- **DM-RS LMMSE & Unbiased Rank-1 Detection**: Separable time-frequency LMMSE (exponential PDP + Jakes Doppler prior) eliminates high-QAM amplitude compression seen in LS estimation, paired with `RankOneDetector` for massive receive arrays; native LS and perfect CSI are also supported.
+- **Continuous Cross-Period Channel Evolution**: `ContinuousCir` analytically evaluates Sionna CDL/TDL (and custom) trajectories at exact OFDM symbol timestamps `slot * 14 + sym` with $O(1)$ memory across warmup and measurement, making it ready for CSI prediction research.
+- **Fair Pairing & Bootstrap Statistics**: Identical CIR realizations and standardized SRS noise are shared across SNRs, codebooks, and estimators, with 95% SRS-period bootstrap CIs and paired throughput differences.
 
 ---
 
@@ -132,7 +136,7 @@ pip install -e . --no-deps
 
 ## Quick Start
 
-Run all commands from the **repository root** (single-line commands work identically on Linux, macOS, Windows PowerShell, and CMD). Default timestamped output folders never overwrite previous runs (`./results/pusch_<stamp>/` for `python -m pusch_baseline`, and `pusch_baseline/results/` for `run_*.py`).
+Run all commands from the **repository root** (single-line commands work identically on Linux, macOS, Windows PowerShell, and CMD). Default timestamped folders never overwrite prior runs (`./results/pusch_<stamp>/` for `python -m pusch_baseline`, and `pusch_baseline/results/` for `run_*.py`).
 
 | Task | Entry Point | Typical Runtime (Multi-Core CPU) |
 | :--- | :--- | :---: |
@@ -200,9 +204,9 @@ Custom external CIR models can be plugged in via `channel.kind = "custom"` and p
 ## Built-in Configs and Conventions
 
 - **Built-in profiles** (`pusch_baseline/configs/`): `awgn_siso.json`, `tdl_2x2.json`, `cdl_c_4t64r.json`, `cdl_c_4t64r_adaptive.json`, `cdl_c_4t64r_dsudd.json`, `cdl_c_4t64r_codebooks.json` (main), `cdl_c_4t64r_codebooks_long.json` (long sweep with 3-window MCS stability check).
-- **Reference SNR**: Nominal unit UE data-RE power budget (before precoding and channel) divided by per-RX-antenna complex RE noise variance ($\sigma_n^2 = 10^{-\text{SNR}_{\text{dB}}/10}$). A 64-antenna BS adds ~18 dB array gain plus 38.901 element gain, placing operating points at negative reference SNRs.
-- **Power modes**: `full_power` normalizes PUSCH by $1/\lVert W \rVert_F$ (total data-RE power = 1); `per_port` caps each TX port at $1/N_{\text{TX}}$. In both modes, SRS transmits simultaneously across all $N_{\text{TX}}$ ports at $1/N_{\text{TX}}$ per active RE (total active-RE power = 1; comb-2 gives half the per-symbol energy of PUSCH, ~3 dB conservative vs. equal-symbol-power TS 38.213).
-- **TDD SRS timing**: SRS occupies the last $N_{\text{ap}}$ symbols of the first `S` slot and each subsequent first `S` slot at least `srs_period_slots` slots later (matching TS 38.211 $T_{\text{SRS}}$ when aligned to `S`-slot spacing). Sounding results are assumed available before the next `U` slot ($K_2/N_2$ delay is not modeled).
+- **Reference SNR**: Unit UE data-RE power budget (before precoding and channel) divided by per-RX-antenna complex RE noise variance, i.e., $\sigma_n^2 = 10^{-\mathrm{SNR}_{\mathrm{dB}}/10}$ . A 64-antenna BS adds ~18 dB array gain plus 38.901 element gain, placing operating points at negative reference SNRs while post-combining SINR remains positive.
+- **Power modes**: `full_power` normalizes PUSCH by $1 / \lVert W \rVert_F$ (total data-RE power = 1); `per_port` caps each TX port at $1 / N_{\mathrm{TX}}$ . In both modes, SRS transmits simultaneously across all $N_{\mathrm{TX}}$ ports at $1 / N_{\mathrm{TX}}$ per active RE (total active-RE power = 1; comb-2 gives half the per-symbol energy of PUSCH, ~3 dB conservative vs. equal-symbol-power TS 38.213).
+- **TDD SRS timing**: SRS occupies the last $N_{\mathrm{ap}}$ symbols of the first `S` slot and each subsequent first `S` slot at least `srs_period_slots` slots later (matching TS 38.211 period $T_{\mathrm{SRS}}$ when aligned to `S`-slot spacing). Sounding results are assumed available before the next `U` slot (scheduling/processing delay $K_2 / N_2$ is not modeled).
 - **Tests**: Run the pure-Python suite via `python -m unittest discover -s pusch_baseline/tests -v` (also executed automatically in GitHub Actions CI).
 
 ---

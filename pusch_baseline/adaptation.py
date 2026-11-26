@@ -60,12 +60,10 @@ def select_grant(
     Thresholds are policy parameters to calibrate for the intended BLER,
     receiver, channel estimation and grant size.
 
-    If supplied, SRS channel-estimation error variance is uniform or one
-    value per subcarrier. Assuming independent RX/TX errors of equal
-    variance on each tone, subtract their expected energy from the Gram
-    matrix. Average within each 12-tone PRB before clipping negative Gram
-    eigenvalues. This wideband approximation trades frequency resolution
-    for less noisy power estimates and does not model residual CSI error.
+    Both ideal and estimated SRS channels use Gram matrices averaged within
+    each 12-tone PRB. An optional scalar or per-tone error variance removes
+    the expected energy of independent RX/TX estimation errors before PRB
+    averaging and clipping negative Gram eigenvalues.
     """
     return select_grants(
         channel, noise_variance, candidates, mcs_thresholds_db, margin_db,
@@ -88,7 +86,7 @@ def select_grants(
 
     Score a rank and TPMI pair once on the common SRS estimate, including
     when the pair supports multiple MCS indices or belongs to several subsets.
-    A missing threshold table selects the spatial grant by SINR alone.
+    Without MCS thresholds, use the sum of the estimated rates over layers.
     """
     subsets = {name: tuple(keys) for name, keys in codebook_keys.items()}
     if not subsets or any(not keys for keys in subsets.values()):
@@ -98,16 +96,15 @@ def select_grants(
 
     channel = np.asarray(channel, dtype=np.complex128)
     tx_gram = channel.conj().swapaxes(-1, -2) @ channel
-    tone_counts = None
     if srs_error_variance is not None:
         error_variance = np.asarray(srs_error_variance, dtype=float)
         if (error_variance.shape not in ((), tx_gram.shape[:1])
                 or not np.all(np.isfinite(error_variance) & (error_variance >= 0.0))):
             raise ValueError("SRS error variance must be finite and nonnegative, scalar or per tone.")
         tx_gram -= channel.shape[1] * error_variance[..., None, None] * np.eye(channel.shape[2])
-        prb_starts = np.arange(0, len(tx_gram), 12)
-        tone_counts = np.diff(prb_starts, append=len(tx_gram))
-        tx_gram = np.add.reduceat(tx_gram, prb_starts, axis=0) / tone_counts[:, None, None]
+    prb_starts = np.arange(0, len(tx_gram), 12)
+    tone_counts = np.diff(prb_starts, append=len(tx_gram))
+    tx_gram = np.add.reduceat(tx_gram, prb_starts, axis=0) / tone_counts[:, None, None]
     sinr_by_precoder = {}
     sum_rate_by_precoder = {}
     for key in dict.fromkeys(key for keys in subsets.values() for key in keys):

@@ -99,7 +99,7 @@ class TargetSweepTests(unittest.TestCase):
         )
         attempts = {False: 0, True: 0}
 
-        def feedback(_link, _batch_size, noise, *, channel_response):
+        def feedback(_link, _batch_size, noise, *, channel_response, **_):
             weak = float(noise) > 1
             attempts[weak] += 1
             return int(weak or attempts[weak] % 10 == 0)

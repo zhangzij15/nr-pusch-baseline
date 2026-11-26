@@ -50,7 +50,7 @@ class McsIndexAdaptationTests(unittest.TestCase):
             original_init(link, grant_cfg, *args, **kwargs)
             link.test_mcs = grant_cfg.pusch.mcs_index
 
-        def decode(link, batch_size, noise_variance, *, channel_response):
+        def decode(link, batch_size, noise_variance, *, channel_response, **_):
             self.assertEqual(batch_size, 1)
             self.assertIsNotNone(channel_response)
             if float(noise_variance) < 1.0:

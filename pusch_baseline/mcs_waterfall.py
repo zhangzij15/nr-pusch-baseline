@@ -75,6 +75,8 @@ def simulate_mcs_curve(cfg, bank_path, mcs_index, batch_size, on_point=None, *,
         for slot in slots
     }
     reference = next(iter(links.values()))
+    first_symbol, num_symbols = grant.symbol_allocation
+    allocated_channels = channels[..., first_symbol:first_symbol + num_symbols, :]
     execute = {
         slot: tf.function(link.count_block_errors_tensor, autograph=False, reduce_retracing=True)
         for slot, link in links.items()
@@ -102,7 +104,8 @@ def simulate_mcs_curve(cfg, bank_path, mcs_index, batch_size, on_point=None, *,
             for start in range(0, len(indices), batch_size):
                 group = indices[start:start + batch_size]
                 effective = np.einsum(
-                    "brtsf,bt->brsf", _channel_batch(channels, group), snr_weights[group], optimize=False,
+                    "brtsf,bt->brsf", _channel_batch(allocated_channels, group), snr_weights[group],
+                    optimize=False,
                 )
                 h = tf.convert_to_tensor(effective[:, None, :, None, None])
                 errors += int(execute[slot](len(group), no, channel_response=h).numpy())

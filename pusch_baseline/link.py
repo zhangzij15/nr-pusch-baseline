@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from math import radians, sqrt
+from math import ceil, floor, log2, radians, sqrt
 
 import tensorflow as tf
 from numpy import finfo, random
@@ -11,9 +11,11 @@ from scipy.constants import speed_of_light
 from sionna.phy import config as sionna_config
 from sionna.phy.channel import AWGN, ApplyOFDMChannel, OFDMChannel
 from sionna.phy.channel.tr38901 import CDL, TDL, PanelArray
+from sionna.phy.mapping import BinarySource
 from sionna.phy.nr import (
     PUSCHConfig, PUSCHLSChannelEstimator, PUSCHReceiver, PUSCHTransmitter, TBDecoder, TBEncoder,
 )
+from sionna.phy.utils import expand_to_rank
 
 from .config import SimulationConfig
 from .dmrs_lmmse import DmrsLmmseEstimator
@@ -71,11 +73,37 @@ class PairedCir:
             self._rng.reset(caller_state)
 
 
+class _NrPuschConfig(PUSCHConfig):
+    """Keep the grant, Sionna waveform and scheduler on the same NR TBS."""
+
+    @property
+    def tb_size(self):
+        re_per_prb = min(156, self.num_res_per_prb - self.num_ov)
+        num_re = re_per_prb * self.num_resource_blocks
+        rate = float(self.tb.target_coderate)
+        info = num_re * self.num_layers * self.tb.num_bits_per_symbol * rate * self.tb.tb_scaling
+        if info <= 3824:
+            # Step 3 uses floor and the native 38.214 Table 5.1.3.2-1 lookup.
+            return super().tb_size
+
+        # TS 38.214 §§6.1.4.2 and 5.1.3.2 step 4: retain fractional N_info
+        # and round positive half-integers upwards before determining C.
+        quantum = 2 ** (floor(log2(info - 24)) - 5)
+        quantized = max(3840, quantum * floor((info - 24) / quantum + 0.5))
+        if rate <= 0.25:
+            blocks = ceil((quantized + 24) / 3816)
+        elif quantized > 8424:
+            blocks = ceil((quantized + 24) / 8424)
+        else:
+            blocks = 1
+        return 8 * blocks * ceil((quantized + 24) / (8 * blocks)) - 24
+
+
 def _pusch_config(cfg: SimulationConfig) -> PUSCHConfig:
     carrier = cfg.carrier
     grant = cfg.pusch
     dmrs = grant.dmrs
-    pc = PUSCHConfig()
+    pc = _NrPuschConfig()
     pc.carrier.cyclic_prefix = "normal"
     pc.carrier.subcarrier_spacing = carrier.subcarrier_spacing_khz
     pc.carrier.n_size_grid = carrier.n_size_grid
@@ -289,7 +317,7 @@ class PuschLink:
     def __init__(self, cfg: SimulationConfig, channel_model_factory=None, *,
                  external_channel=False, tb_decoder_cache=None, allow_low_rate=True):
         pc = _pusch_config(cfg)
-        rate_plan = low_rate_plan(pc) if allow_low_rate else None
+        rate_plan = low_rate_plan(pc, allow_low_rate=allow_low_rate)
         tx_config = pc
         if rate_plan is not None:
             # The native transmitter constructs its own TB encoder. A grant with
@@ -300,8 +328,9 @@ class PuschLink:
                 raise ValueError(f"Unsupported modulation order for low-rate PUSCH: {qam}")
             tx_config = deepcopy(pc)
             tx_config.tb.mcs_table, tx_config.tb.mcs_index = _PLACEHOLDER_MCS_BY_QAM[qam]
+        self._binary_source = BinarySource(precision=cfg.precision)
         self._transmitter = PUSCHTransmitter(
-            tx_config, return_bits=True, output_domain="freq", precision=cfg.precision
+            tx_config, return_bits=False, output_domain="freq", precision=cfg.precision
         )
         self.resource_grid = self._transmitter.resource_grid
         self._perfect_csi = cfg.channel.estimator == "perfect"
@@ -365,20 +394,38 @@ class PuschLink:
             raise ValueError(f"SNR {snr_db} dB is outside the numeric range.")
         return tf.constant(variance, dtype=self._real_dtype)
 
-    def count_block_errors(self, batch_size: int, no, *, channel_response=None) -> int:
-        return int(self.count_block_errors_tensor(batch_size, no, channel_response=channel_response).numpy())
+    def count_block_errors(self, batch_size: int, no, *, channel_response=None,
+                           payload=None, standard_noise=None) -> int:
+        failed = self.count_block_errors_tensor(
+            batch_size, no, channel_response=channel_response, payload=payload, standard_noise=standard_noise,
+        )
+        return int(failed.numpy())
 
-    def count_block_errors_tensor(self, batch_size: int, no, *, channel_response=None) -> tf.Tensor:
+    def count_block_errors_tensor(self, batch_size: int, no, *, channel_response=None,
+                                  payload=None, standard_noise=None) -> tf.Tensor:
         """Return the TB error count without reading it back from TensorFlow."""
-        x, bits = self._transmitter(batch_size)
+        if payload is None:
+            bits = self._binary_source([batch_size, 1, self.tb_size_bits])
+        else:
+            bits = tf.cast(payload, self._real_dtype)
+        x = self._transmitter(bits)
         if self._channel is None:
             if channel_response is None:
                 raise ValueError("A frequency response is required for the external channel")
             # Set the transmit power on the data grid and DM-RS before adding noise.
-            y = self._apply_ofdm(x * self._tx_amplitude_scale, channel_response, no)
+            grid = x * self._tx_amplitude_scale
+            if standard_noise is None:
+                y = self._apply_ofdm(grid, channel_response, no)
+            else:
+                y = self._apply_ofdm(grid, channel_response)
+                tf.debugging.assert_equal(tf.shape(standard_noise), tf.shape(y))
+                sigma = tf.sqrt(expand_to_rank(no, tf.rank(y), axis=-1))
+                y = y + tf.cast(sigma, y.dtype) * tf.cast(standard_noise, y.dtype)
             # The perfect-CSI receiver applies the native precoder to this response.
             received = (y, channel_response * self._tx_amplitude_scale) if self._perfect_csi else y
         else:
+            if standard_noise is not None:
+                raise ValueError("Explicit receiver noise requires an external channel response")
             received = self._channel(x, no)
         if self._perfect_csi:
             y, h = received

@@ -10,7 +10,7 @@ from pusch_baseline.adaptation import select_grant, select_grants
 
 class LinkAdaptationTests(unittest.TestCase):
     def test_siso_predicts_frequency_selective_sinr_and_applies_margin(self):
-        channel = np.array([[[1.0]], [[2.0j]]])
+        channel = np.repeat(np.array([[[1.0]], [[2.0j]]]), 12, axis=0)
         weaker = (1, 0, 3)
         stronger = (1, 0, 8)
         precoder = np.ones((1, 1))
@@ -97,6 +97,21 @@ class LinkAdaptationTests(unittest.TestCase):
         )
         predicted = (3.0 ** (12.0 / 13.0)) * (9.0 ** (1.0 / 13.0)) - 1.0
         self.assertAlmostEqual(sinr_db, 10.0 * math.log10(predicted))
+
+    def test_perfect_and_zero_error_srs_select_the_same_precoder(self):
+        # The first port has greater PRB-average power but six deep fades.
+        # Mixing per-tone and per-PRB MI scoring would reverse the decision.
+        channel = np.zeros((12, 1, 2), dtype=complex)
+        channel[:6, 0, 0] = math.sqrt(6)
+        channel[:, 0, 1] = math.sqrt(2)
+        candidates = {(1, i, 5): (np.eye(2)[:, i:i+1], 128) for i in range(2)}
+        ideal = select_grants(channel, 1., candidates, None, 0., {"full": candidates})
+        real = select_grants(channel, 1., candidates, None, 0., {"full": candidates},
+                             srs_error_variance=np.zeros(12))
+        self.assertEqual(ideal, real)
+        key, score = ideal["full"]
+        self.assertEqual(key, (1, 0, 5))
+        self.assertAlmostEqual(score, 10 * math.log10(3))
 
     def test_shared_scores_match_independent_codebook_decisions(self):
         channel = np.tile([[[1.0, 2.0]]], (12, 1, 1))

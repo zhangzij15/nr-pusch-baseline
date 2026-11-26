@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import tensorflow as tf
@@ -14,12 +15,47 @@ from sionna.phy.channel.tr38901 import CDL, TDL, PanelArray
 from pusch_baseline import SimulationConfig, load_config, simulate
 from pusch_baseline.adaptive_simulation import SoundingChannel
 from pusch_baseline.config import AdaptationSettings, OllaSettings
-from pusch_baseline.continuous_channel import ContinuousCir
+from pusch_baseline.continuous_channel import ContinuousCir, _normal_cp_symbol_starts
 from pusch_baseline.simulation import simulate_codebook_comparison
 from pusch_baseline.srs import SrsEstimator
 
 
 class ContinuousChannelTests(unittest.TestCase):
+    def test_normal_cp_timestamps_keep_half_subframes_aligned(self):
+        for spacing in (15, 30, 60, 120):
+            slots_per_ms = spacing // 15
+            indices = np.arange(28 * slots_per_ms + 1)
+            durations = np.full(indices.size - 1, (2048 + 144) / slots_per_ms)
+            durations[::7 * slots_per_ms] += 16
+            expected = np.r_[0, durations.cumsum()] / 30_720_000
+            np.testing.assert_allclose(_normal_cp_symbol_starts(indices, spacing), expected, rtol=0, atol=1e-17)
+            self.assertEqual(_normal_cp_symbol_starts(14 * slots_per_ms * 1000, spacing), 1.0)
+
+    def test_sounding_uses_the_same_physical_clock_for_different_bandwidths(self):
+        base = SimulationConfig()
+        for mode in ("per_period", "continuous"):
+            for prbs in (4, 48):
+                with self.subTest(mode=mode, prbs=prbs):
+                    cfg = replace(base,
+                        carrier=replace(base.carrier, n_size_grid=prbs, subcarrier_spacing_khz=60, slot_number=1),
+                        channel=replace(base.channel, kind="tdl", normalize=False),
+                        adaptation=AdaptationSettings(channel_evolution=mode),
+                    )
+                    stream = SoundingChannel(cfg, None, SrsEstimator(1, prbs, 0))
+                    with patch.object(stream._model, "sample", wraps=stream._model.sample) as sampled:
+                        list(stream.slots((0, 1), start_slot=3))
+                    (indices, rate), kwargs = sampled.call_args
+                    self.assertEqual(rate, 56_000)
+                    # Carrier slot 1 + sounding slot 3 starts a new subframe.
+                    # At 60 kHz only its first symbol has an extra 16 ticks here.
+                    ticks = np.r_[13, np.arange(14, 28)] * 548 + 16
+                    relative = ticks / 30_720_000
+                    # Continuous time is relative to the beginning of carrier slot 1.
+                    origin = (30_720 - (14 * 548 + 16)) / 30_720_000 if mode == "continuous" else 0.0
+                    np.testing.assert_allclose(kwargs["sample_times"], origin + relative, rtol=0, atol=1e-17)
+                    np.testing.assert_array_equal(indices, np.r_[13, np.arange(14, 28)] +
+                                                  (42 if mode == "continuous" else 0))
+
     def test_continuous_cdl_matches_single_long_sionna_trajectory(self):
         ut = PanelArray(num_rows_per_panel=2, num_cols_per_panel=2, polarization="single",
                         polarization_type="V", antenna_pattern="omni", carrier_frequency=6.7e9,

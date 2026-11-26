@@ -6,7 +6,7 @@ import unittest
 import tensorflow as tf
 from sionna.phy import config as sionna_config
 
-from pusch_baseline import load_config
+from pusch_baseline import SimulationConfig, load_config
 from pusch_baseline.link import PuschLink, _pusch_config
 from pusch_baseline.low_rate_tb import low_rate_plan, low_rate_tb
 
@@ -66,6 +66,39 @@ class LowRateTbTests(unittest.TestCase):
                 # Remove the PUSCH-specific scrambling, which nrULSCH leaves to nrPUSCH.
                 coded = codec._scrambler(codec.encode(payload)).numpy().astype("uint8")
                 self.assertEqual(sha256(coded.tobytes()).hexdigest(), expected)
+
+    def test_grant_size_and_codeword_match_matlab_at_bg_and_tbs_boundaries(self):
+        from sionna.phy.fec.scrambling import TB5GScrambler
+
+        # nrTBS and nrULSCH, RV0, 144 data RE per PRB and the payload below.
+        cases = (
+            (2, 9, 384, "2f87f04b3eea69fabd36c0eaed8016708f7b070c20b90e33b13f7f26e8113d91"),
+            (20, 9, 3824, "2b1b5d6cc11ae9ca6cfa75a36b8d523b6ac811e6c26d4fe4bbd41f56f207ef53"),
+            (38, 9, 7296, "f99fe5cf3440e9147be6325affd08763860f026c72c5d88eafb681dca1187b6a"),
+            (57, 28, 46104, "33332ee7175283f616b12e08b809d5d6edbef29df7593d9a0b9c05dd84e56637"),
+        )
+        base = SimulationConfig()
+        scrambler = TB5GScrambler(n_rnti=base.pusch.rnti, n_id=base.carrier.cell_id,
+                                  channel_type="PUSCH", binary=True)
+        for prb, mcs, tbs, digest in cases:
+            with self.subTest(prb=prb, mcs=mcs):
+                cfg = replace(base, carrier=replace(base.carrier, n_size_grid=prb),
+                              pusch=replace(base.pusch, mcs_index=mcs))
+                link = PuschLink(cfg)
+                self.assertEqual(link.tb_size_bits, tbs)
+                self.assertEqual(link.grant_metadata["tb_size_bits"], tbs)
+                index = tf.range(tbs)
+                payload = tf.cast((7 * index + index % 11) % 17 < 8, tf.float32)[None, None]
+                coded = scrambler(link._transmitter._tb_encoder(payload)).numpy().astype("uint8")
+                self.assertEqual(sha256(coded.tobytes()).hexdigest(), digest)
+                self.assertEqual(link.count_block_errors(1, link.noise_variance(30)), 0)
+
+    def test_tbs_rounds_exact_half_up_for_short_grant(self):
+        base = SimulationConfig()
+        cfg = replace(base, carrier=replace(base.carrier, n_size_grid=32),
+                      pusch=replace(base.pusch, mcs_index=12, symbol_allocation=(0, 10)))
+        # nrTBS('16QAM',1,32,96,434/1024). (N_info - 24) / 128 = 40.5.
+        self.assertEqual(_pusch_config(cfg).tb_size, 5248)
 
     def test_fixed_grant_simulate_supports_low_rate_mcs_across_all_tables(self):
         from pusch_baseline import SimulationConfig, simulate

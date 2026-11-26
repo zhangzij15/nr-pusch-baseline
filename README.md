@@ -30,13 +30,16 @@
 
 这是一个纯 Python 编写的 **5G NR CP-OFDM 上行（PUSCH）链路级仿真基线**，底层基于 NVIDIA **Sionna 1.2.2**，开箱即用，无需 MATLAB 或 GPU。
 
-如果你正在研究 **4T64R 上行码本预编码**、**SRS / DM-RS 信道估计**、**时变信道预测（CSI Prediction）**，或需要一套标准的 **MCS 0–28 BLER 瀑布图**作基线对照，可以直接使用本仓库开展实验。所有方案对比均在同一批物理信道与噪声实现上严格配对，确保对比公平、结果可复现，并自动输出 95% 吞吐量置信区间与两两差值。
+如果你正在研究 **4T64R 上行码本预编码**、**SRS / DM-RS 信道估计**、**时变信道预测（CSI Prediction）**，或需要一套标准的 **MCS 0–28 BLER 瀑布图**作基线对照，可以直接使用本仓库开展实验。码本与估计器对比在同一物理时隙共享 CIR、标准化 SRS/PUSCH 接收噪声及净荷比特前缀，确保对比公平、结果可复现，并自动输出吞吐量的 95% Bootstrap 置信区间与配对差值。
 
 ---
 
 ## 仿真效果示例
 
-以下两张图均基于 **4T64R CDL-C、48 PRB（30 kHz 子载波间隔）、`DSUDD` TDD、6.7 GHz、3 km/h 步行速度、单流全码本（TPMI 0–27）、满功率模式（`full_power`）**，开启 **`--channel-evolution continuous`（跨周期连续移动信道）** 直接运行仓库脚本生成。
+以下两组示例均基于 **4T64R CDL-C、48 PRB（30 kHz 子载波间隔）、`DSUDD` TDD、6.7 GHz、3 km/h 步行速度、单流全码本（TPMI 0–27）、满功率模式（`full_power`）**，开启 **`--channel-evolution continuous`（跨周期连续移动信道）** 生成。
+
+> [!NOTE]
+> 下方两张示例图与表中数值归档于提交 `d4b935e`（修订前的 CIR 时钟、理想 SRS 评分粒度与噪声抽样实现）。展开下方折叠命令即可在当前版本运行完全相同的场景；由于上述三项口径已升级，当前版本的实测数值会有细微变化，整体趋势保持一致。
 
 ### 1. 理想信道估计（ICE）vs 实际信道估计（RCE）吞吐量对比
 
@@ -44,10 +47,10 @@
   <img src="docs/figures/thp_vs_snr_ice_rce_continuous.png" alt="PUSCH Throughput vs SNR | SRS and DM-RS ICE vs RCE | Continuous CIR" width="94%">
 </p>
 
-> `ICE` 表示理想信道已知，`RCE` 表示基于导频的实际信道估计。四条曲线将 **SRS（预编码选择）** 与 **DM-RS（数据解调）** 两阶段的估计误差解耦呈现，便于直接定位链路性能瓶颈。
+> `ICE` 表示理想信道已知，`RCE` 表示基于导频的实际信道估计。四条曲线分别组合 **SRS（预编码选择）** 与 **DM-RS（数据解调）** 的理想/实际估计方式，直观呈现两阶段各自的链路开销。
 
 - **仿真配置**：4 根发射天线共用 1 个 SRS 资源（comb-2、4 个连续重复符号、正交循环移位 `0/2/4/6`），在 `DSUDD` 每个 `S` 时隙发送一次（周期 5 时隙 = 2.5 ms）；接收端采用时频可分离 DM-RS LMMSE，外环控速目标 BLER 为 10%。整条连续轨迹含 240 个预热块与 300 个评估块（约 1.35 秒，单次移动场景 `seed=20261112`）。
-- **主要现象**：低信噪比下四条曲线层次清晰。在 −26 dB 处，全理想估计（2.125 Mbps）领先全实际估计（1.619 Mbps）**0.507 Mbps**；单开一项实际估计时，DM-RS 误差带来 **0.299 Mbps** 损失，SRS 误差带来 **0.178 Mbps** 损失（均具统计显著性，其余约 0.030 Mbps 来自两项误差叠加）。随着信噪比升高，估计误差逐步收敛，自 −4 dB 起四条曲线共同达到 MCS 28 吞吐上限（**15.179 Mbps**）。
+- **主要现象**：低信噪比下四条曲线层次清晰。在该轨迹的 −26 dB 处，全理想估计（2.125 Mbps）领先全实际估计（1.619 Mbps）**0.507 Mbps**；仅将 DM-RS 切换为实际 LMMSE 估计时吞吐量下降 **0.299 Mbps**，仅将 SRS 切换为实际估计时下降 **0.178 Mbps**。随着信噪比升高，估计误差逐步收敛，自 −4 dB 起四条曲线共同达到 MCS 28 吞吐上限（**15.179 Mbps**）。
 
 | 参考 SNR | SRS ICE + DMRS ICE | SRS RCE + DMRS ICE | SRS ICE + DMRS RCE | SRS RCE + DMRS RCE |
 | :---: | :---: | :---: | :---: | :---: |
@@ -59,7 +62,7 @@
 > 表中括号内斜体百分比为对应信噪比下的实测评估 BLER（外环目标 10%）；吞吐量为计入全部 TDD 时隙的真实吞吐量（`thp_wall_clock_mbps`）。
 
 <details>
-<summary>点击展开：复现该图的完整命令（16 核 CPU 参考耗时约 25 分钟）</summary>
+<summary>点击展开：运行此场景的完整命令（16 核 CPU 参考耗时约 25 分钟）</summary>
 
 ```bash
 python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long.json --warmup-tb 240 --num-tb 300 --channel-evolution continuous --workers 16
@@ -78,7 +81,7 @@ python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long
 </p>
 
 - **仿真配置**：依次固定 MCS 0 至 28（覆盖 QPSK / 16-QAM / 64-QAM），在共享连续信道库上每个采样点评估 **512 个连续传输块**（约 1.28 秒轨迹），并在陡降区间自动二分加密至 `0.25 dB` 步长（全表共实测 429 个点）。预编码由含噪 4 端口 SRS（每 5 时隙一次）选出，解调采用 DM-RS LMMSE。每条曲线首次出现「零错块」的位置以倒三角标出（95% 置信上界约 0.58%）。
-- **主要现象**：29 条曲线从 −28.0 dB 平滑排布至 −5.5 dB，总跨度超过 **22 dB**，10% BLER 拐点随 MCS 严格单调递增。每条曲线均完整下降至零错块点，零错块前的最低非零误块率全表不超过 2.9%（多数档位落在 0.2%–1%）。得益于 DM-RS LMMSE 消除了 LS 估计的幅度压缩，QPSK 顶档（MCS 9）与 16-QAM 起步档（MCS 10）在 10% BLER 处仅相隔 **0.22 dB**，避免了调制切换边界处的曲线倒挂。
+- **主要现象**：29 条曲线从 −28.0 dB 平滑排布至 −5.5 dB，总跨度超过 **22 dB**，10% BLER 拐点随 MCS 严格单调递增。每条曲线均完整下降至零错块点，零错块前的最低非零误块率全表不超过 2.9%（多数档位落在 0.2%–1%）。采用 DM-RS LMMSE 时，QPSK 顶档（MCS 9）与 16-QAM 起步档（MCS 10）的 10% BLER 门限分别为 −20.89 dB 和 −20.67 dB，仅相隔 **0.22 dB**，调制切换边界过渡平滑、无曲线倒挂。
 
 | 代表档位 | 调制方式 | 传输块大小 (bits) | 10% BLER 对应参考 SNR |
 | :---: | :---: | :---: | :---: |
@@ -90,7 +93,7 @@ python run_ice_rce.py --config pusch_baseline/configs/cdl_c_4t64r_codebooks_long
 > 以上两张示例图均基于 `seed=20261112` 的单条连续移动信道轨迹。如需多场景统计均值，只需更换多个 `--seed` 重复运行后汇总即可，详见文末[建模范围与参考标准](#建模范围与参考标准)中的统计提示。
 
 <details>
-<summary>点击展开：复现该图的完整命令（支持断点续跑，16 核 CPU 参考耗时约 80 分钟）</summary>
+<summary>点击展开：运行此场景的完整命令（支持断点续跑，16 核 CPU 参考耗时约 80 分钟）</summary>
 
 ```bash
 python run_mcs_waterfall.py --num-tb 512 --snr-step 0.25 --channel-evolution continuous --workers 16
@@ -105,8 +108,8 @@ python run_mcs_waterfall.py --num-tb 512 --snr-step 0.25 --channel-evolution con
 ```mermaid
 flowchart LR
   CIR["3GPP 信道模型<br/>AWGN / TDL / CDL / Custom<br/>每周期独立 & 跨周期连续"] --> SRS["多端口 SRS 探测<br/>comb-2 + 循环移位<br/>实际 RCE / 理想 ICE"]
-  SRS --> LA["链路自适应<br/>去噪偏 Gram + 等效 SINR<br/>TPMI / Rank 选择"]
-  LA --> TX["Sionna NR PUSCH 发射机<br/>LDPC / 扰码 / QAM / 预编码<br/>补齐低码率 RV0 速率匹配"]
+  SRS --> LA["链路自适应<br/>PRB Gram 去噪偏 + MI SINR<br/>TPMI / Rank 选择"]
+  LA --> TX["Sionna NR PUSCH 发射机<br/>LDPC / 扰码 / QAM / 预编码<br/>标准 TBS/BG + 低码率 RV0"]
   TX --> CH["OFDM 频域信道<br/>叠加 AWGN 噪声"]
   CIR --> CH
   CH --> RX["接收机<br/>DM-RS LMMSE / LS / 理想 CSI<br/>单流无偏检测 + LDPC 译码"]
@@ -117,11 +120,11 @@ flowchart LR
 
 | 模块 | 核心特性与实现要点 |
 | :--- | :--- |
-| **标准 NR PUSCH 物理层** | 基于 Sionna 1.2.2 原生上行链路（扰码、QAM、层映射、Type-I 码本预编码、DM-RS、20 迭代 LDPC），并补齐 Sionna 原生不支持的低码率 RV0 速率匹配，固定授权与自适应模式均支持 MCS 表 1/2/3 的低码率档位（含表 1 全部 0–28 档，低码率编码比特已与 MATLAB 5G Toolbox `nrULSCH` 逐比特核对一致）。 |
-| **单资源多端口 SRS 探测** | 按 3GPP TS 38.211 / TS 38.214 建模：1/2/4 根发射天线共用 1 个 SRS 资源（comb-2、带宽配置 `B_SRS = 0`、不跳频、占 1/2/4 个连续重复符号），通过正交循环移位（`0` / `0,4` / `0,2,4,6`）区分端口，总发射功率按端口均分（每端口功率为 $1 / N_{\mathrm{ap}}$ ）；支持含噪真实估计（RCE）与理想估计（ICE）一键切换。 |
-| **DM-RS 估计与单流检测** | 内置时频可分离的 **DM-RS LMMSE**（结合指数时延扩展与 Jakes 多普勒先验），有效消除传统 LS 估计在高阶 QAM 下的幅度压缩；同时支持原生 LS 与理想 CSI。单流（Rank 1）接收采用无偏 `RankOneDetector`，适配 64R 等大规模接收阵列。 |
-| **跨周期连续信道演化** | 除默认的「每 SRS 周期独立刷新小尺度衰落」（适合快速遍历多衰落状态）外，内置 `ContinuousCir` 连续时间采样器：整条仿真（含预热与评估）沿**同一条连续移动的物理轨迹**按精确 OFDM 符号时刻解析推进，内存占用恒定为 $O(1)$ ，专用于评估信道预测与时变跟踪算法。 |
-| **公平配对与统计评估** | 同一实验内，不同信噪比、不同码本与不同估计器复用同一批物理信道与噪声种子，剔除随机采样偏差；自动输出吞吐量的 95% SRS 周期 Bootstrap 置信区间及方案两两配对差值。 |
+| **标准 NR PUSCH 物理层** | 基于 Sionna 1.2.2 原生上行链路（扰码、QAM、层映射、Type-I 码本预编码、DM-RS、20 迭代 LDPC），同时修正 Sionna 在 3GPP TS 38.214 §5.1.3.2 传输块大小（TBS）量化舍入与 TS 38.212 §6.2.2 LDPC BG1/BG2 边界选择上的偏差，并补齐低码率 RV0 速率匹配（QPSK–256-QAM，覆盖 MCS 表 1/2/3；48 PRB 全时隙单层各档及典型 TBS/BG 边界档位的 RV0 码字已与 MATLAB 5G Toolbox `nrTBS` / `nrULSCH` 逐比特核对一致）。 |
+| **单资源多端口 SRS 探测** | 按 3GPP TS 38.211 / TS 38.214 建模：1/2/4 根发射天线共用 1 个 SRS 资源（comb-2、带宽配置 `B_SRS = 0`、不跳频、占 1/2/4 个连续重复符号），通过正交循环移位（`0` / `0,4` / `0,2,4,6`）区分端口，总发射功率按端口均分（每端口功率为 $1 / N_{\mathrm{ap}}$ ）；理想与实际 SRS 统一采用 12 子载波 PRB 级平均 Gram 评分（实际 SRS 额外扣除噪声能量偏置），确保零估计误差极限下二者一致。 |
+| **DM-RS 估计与单流检测** | 内置时频可分离的 **DM-RS LMMSE**（结合指数功率时延谱与 Jakes 多普勒先验），同步输出信道估计值与估计误差方差，并支持在同一信道上对比原生 LS 与理想 CSI；单流（Rank 1）接收采用无偏 `RankOneDetector`，适配 64R 等大规模接收阵列。 |
+| **跨周期连续信道演化** | 除默认的「每 SRS 周期独立刷新小尺度衰落」（适合快速遍历多衰落状态）外，`ContinuousCir` 支持预热与测量阶段沿同一条物理移动轨迹连续推进：内置 CDL/TDL 按 TS 38.211 §5.3.1 常规 CP 长短精确计算每个 OFDM 符号起始时刻并按需解析求值，内存占用恒为 $O(1)$ 。 |
+| **公平配对与统计评估** | 自适应与对比实验按物理时隙共享同一 CIR、标准化 SRS 噪声与标准化 PUSCH 接收噪声，不同码本/MCS 授权统一截取同一净荷比特流前缀；自动输出基于 SRS 周期重采样的 95% Bootstrap 吞吐量置信区间与两两配对差值。 |
 
 ---
 
@@ -263,7 +266,7 @@ python -m pusch_baseline --config pusch_baseline/configs/cdl_c_4t64r_codebooks_l
 | 模式 | 信道演化方式 | 内存占用 | 适用场景 |
 | :--- | :--- | :---: | :--- |
 | **`per_period`**（默认） | 每个 SRS 周期重新采样一次小尺度衰落，仅在单周期内部保持时间连续 | $O(1)$ | 快速遍历多衰落状态，比较算法长期平均性能 |
-| **`continuous`** | 整条仿真（含预热到评估）沿同一条连续移动的物理轨迹按符号时刻推进，跨周期无缝衔接 | $O(1)$ | **信道预测（CSI Prediction）**、时变跟踪、移动性评估 |
+| **`continuous`** | 预热与测量沿同一条物理移动轨迹连续推进，内置 CDL/TDL 按 TS 38.211 常规 CP 符号起点解析采样 | 内置 CDL/TDL 为 $O(1)$ | **信道预测（CSI Prediction）**、时变跟踪、移动性评估 |
 
 ### 导出连续 SRS 观测与真实 PUSCH 信道（供信道预测使用）
 
@@ -312,7 +315,7 @@ run = simulate(cfg)
 write_results("results/custom_run", **run, metric="both")
 ```
 
-如需接入射线追踪或实测信道等外部模型，只需将 `channel.kind` 设为 `"custom"`，并在调用 `simulate()` 时传入 `channel_model_factory(cfg, resource_grid)`。工厂返回的可调用对象接收 `(batch_size, num_time_steps, sampling_frequency)`，输出复数路径增益 `a[B, 1, R, 1, T, P, S]` 与秒级时延 `tau[B, 1, 1, P]`（或逐天线对时延），原生兼容 `per_period` 与 `continuous` 两种模式。
+如需接入射线追踪或实测信道等外部模型，只需将 `channel.kind` 设为 `"custom"`，并在调用 `simulate()` 时传入 `channel_model_factory(cfg, resource_grid)`。工厂返回的可调用对象接收 `(batch_size, num_time_steps, sampling_frequency)`，输出复数路径增益 `a[B, 1, R, 1, T, P, S]` 与秒级时延 `tau[B, 1, 1, P]`（或逐天线对时延），兼容 `per_period` 与 `continuous` 两种模式。在自适应链路中，自定义 CIR 接口按 `14 / slot_duration_s` 等间隔采样，连续模式会缓存整段自定义轨迹。
 
 ---
 
@@ -335,15 +338,15 @@ write_results("results/custom_run", **run, metric="both")
     ├── __init__.py               # 公共导出：SimulationConfig, load_config, simulate, simulate_codebook_comparison
     ├── __main__.py               # 单场景 CLI（python -m pusch_baseline / pusch-baseline）
     ├── config.py                 # 配置数据类与严格参数校验
-    ├── link.py                   # 单 UE PUSCH 收发链路封装
+    ├── link.py                   # 单 UE PUSCH 收发链路封装（含 38.214 精确 TBS 与外部噪声注入）
     ├── simulation.py             # 固定授权扫频、三码本对比总控与运行时线程配置
-    ├── adaptive_simulation.py    # TDD 时隙轴、SRS 周期调度与外环自适应引擎
-    ├── continuous_channel.py     # 跨 SRS 周期连续演化 CIR 采样器（与 Sionna CDL/TDL 严格一致）
+    ├── adaptive_simulation.py    # TDD 物理时隙轴、SRS 周期调度与外环自适应引擎
+    ├── continuous_channel.py     # 跨周期连续 CIR 采样器与 38.211 常规 CP 符号时钟
     ├── srs.py                    # 38.211 单多端口循环移位 SRS 序列生成与正交解扩估计
-    ├── adaptation.py             # 基于 SRS 的去噪偏 Gram 计算与 TPMI/Rank 选择
+    ├── adaptation.py             # 12 子载波 PRB Gram 去噪偏与 MI 准则 TPMI/Rank 选择
     ├── dmrs_lmmse.py             # 单流时频可分离 DM-RS LMMSE 信道估计器
     ├── rank_one_detector.py      # 单流无偏 LMMSE 检测与软解调
-    ├── low_rate_tb.py            # 低码率 QPSK RV0 速率匹配与 LDPC 扩展
+    ├── low_rate_tb.py            # 显式 BG1/BG2 选择与低码率 RV0 速率匹配（QPSK–256-QAM）
     ├── olla.py                   # 在线 MCS 状态控制器与 SINR 裕量 OLLA 控制器
     ├── mcs_stability.py          # 三窗口 MCS 漂移与 BLER 稳定性检查
     ├── throughput_statistics.py  # 95% Bootstrap 吞吐量置信区间与配对差值计算
@@ -396,7 +399,8 @@ write_results("results/custom_run", **run, metric="both")
   - `full_power`（默认）：PUSCH 预编码矩阵按 $1 / \lVert W \rVert_F$ 归一化，无论选哪个 TPMI，发射端总功率恒为 1（对应 Rel-16 `fullpower` 全功放满功率终端，区别于仅增补特定码字的 Mode 1 或多 SRS 资源的 Mode 2）。
   - `per_port`：限制每根发射天线的平均功率不超过 $1 / N_{\mathrm{TX}}$ （对应 Rel-15 各端口均分功放预算；4 端口单流下非相干 / 部分相干 / 全相干的总功率分别为 0.25 / 0.5 / 1.0）。
   - 两种模式下，多端口 SRS 均由全部 $N_{\mathrm{TX}}$ 根天线同时发射，每根天线在活跃 RE 上的功率为 $1 / N_{\mathrm{TX}}$ ，总活跃 RE 功率为 1。由于 comb-2 仅占一半子载波，SRS 单符号总能量为 PUSCH 的一半；按 38.213 等符号功率口径算，这里的 SRS 导频信噪比设定偏保守约 3 dB。
-- **SRS 时序**：TDD 下 SRS 置于 `S` 时隙末尾的 $N_{\mathrm{ap}}$ 个符号（默认符号 10–13），按 `srs_period_slots` 周期发送；探测结果默认在下一个上行 `U` 时隙前生效（未额外建模调度与处理时延 $K_2 / N_2$ ）。
+- **SRS 时序与 TDD 相位**：TDD 下 SRS 置于 `S` 时隙末尾的 $N_{\mathrm{ap}}$ 个符号（默认符号 10–13），按 `srs_period_slots` 周期发送；探测结果默认在下一个上行 `U` 时隙前生效（未额外建模调度与处理时延 $K_2 / N_2$ ）。预热结束后，测量阶段在同一物理 TDD 图样相位上无缝衔接，测量轨迹中的 `slot_index` 加上 `metadata.adaptation.measurement_start_slot` 即为从仿真起点计数的物理时隙索引。
+- **TBS、基图与低码率口径**：传输块大小严格遵循 3GPP TS 38.214 §5.1.3.2（保留小数 $N_{\mathrm{info}}$ 并执行正向半整舍入），LDPC 基图选择严格遵循 TS 38.212 §6.2.2（按传输块净荷与目标码率判定 BG1/BG2），补齐 Sionna 1.2.2 在边界量化与低码率 RV0 速率匹配上的差异。
 - **BLER 与吞吐量**：CRC 校验失败或译码比特与原始发送比特任一位不符均计为错块。TDD 真实吞吐量（`thp_wall_clock_mbps`）等于正确收到的净荷比特数除以包含 `D`、`S`、`U` 与空闲时隙在内的全部物理时间（Mbps，不含 HARQ 软合并）。
 - **输出文件**：高清曲线图（`THP_vs_SNR*.png` / `BLER_vs_SNR*.png` 及瀑布图 `.pdf`）、扁平数据表（`results.csv`）、方案差值表（`paired_differences.csv` / `throughput_differences.csv`），以及包含完整配置、逐时隙轨迹与信道 SHA-256 指纹的 `summary.json`。
 
@@ -408,7 +412,7 @@ write_results("results/custom_run", **run, metric="both")
 python -m unittest discover -s pusch_baseline/tests -v
 ```
 
-测试套件涵盖多端口循环移位 SRS 正交性、与 Sionna 原生轨迹位级一致的 `ContinuousCir`、DM-RS LMMSE、低码率 RV0 编解码、在线 OLLA、三窗口稳定性、亚 dB 瀑布图加密与断点续跑、运行时线程配置以及 ICE/RCE 对比输出，全部在纯 Python 环境下运行，并由 GitHub Actions CI 自动回归验证。
+测试套件涵盖多端口循环移位 SRS 正交性、NR 常规 CP 符号时钟与 `ContinuousCir` 连续轨迹、DM-RS LMMSE、3GPP TBS / BG1-BG2 边界与低码率 RV0 编解码（含 MATLAB `nrTBS`/`nrULSCH` 逐比特校验）、TDD 跨阶段相位衔接、按物理时隙配对的 PUSCH 噪声与净荷前缀、在线 OLLA、三窗口稳定性、亚 dB 瀑布图加密与短符号授权切片、运行时线程配置以及 ICE/RCE 对比输出，全部在纯 Python 环境下运行，并由 GitHub Actions CI 自动回归验证。
 
 ---
 
@@ -431,7 +435,7 @@ python -m unittest discover -s pusch_baseline/tests -v
 <details>
 <summary><b>Q3：运行时间较长的瀑布图如果中途中断，需要从头重跑吗？</b></summary>
 
-不需要。`run_mcs_waterfall.py` 每完成一个 `(MCS, SNR)` 采样点即原子写入进度到 `mcs_checkpoints/` 目录。只需用**完全相同的 `--output-dir` 和运行参数**重新执行，脚本会自动核对配置与信道指纹，跳过已完成的采样点并继续计算。
+不需要。`run_mcs_waterfall.py` 每完成一个 `(MCS, SNR)` 采样点即原子写入进度到 `mcs_checkpoints/` 目录。在同一仿真修订版下，只需使用相同的 `--output-dir` 和运行参数重新执行，脚本会自动核对配置、修订号与信道指纹并无缝续跑；若升级了编码、信道时钟或预编码评分算法，则需指定新的输出目录（历史归档结果仍可直接读取或通过 `--snr-from` 复用其 SNR 网格）。
 
 </details>
 

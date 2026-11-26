@@ -13,6 +13,24 @@ from pusch_baseline.mcs_waterfall_channel import write_channel_bank
 
 
 class McsWaterfallChannelTests(unittest.TestCase):
+    def test_short_grants_decode_from_a_full_slot_channel_bank(self):
+        from pusch_baseline.mcs_waterfall import simulate_mcs_curve
+
+        cfg = load_config(Path(__file__).resolve().parents[1] / "configs/cdl_c_4t64r_codebooks.json")
+        cfg = replace(
+            cfg,
+            carrier=replace(cfg.carrier, n_size_grid=4),
+            channel=replace(cfg.channel, kind="tdl", num_rx_ant=2, estimator="perfect"),
+        )
+        with TemporaryDirectory() as temp:
+            bank = write_channel_bank(cfg, [30.0], 2, Path(temp))
+            self.assertEqual(bank["shape"][-2], 14)
+            for length in (7, 10):
+                with self.subTest(length=length):
+                    short = replace(cfg, pusch=replace(cfg.pusch, symbol_allocation=(0, length)))
+                    point, = simulate_mcs_curve(short, temp, 5, 2, snr_points=[30.0])
+                    self.assertEqual((point["num_tb"], point["tb_errors"]), (2, 0))
+
     def test_reordering_snr_preserves_channels_and_reorders_srs_weights(self):
         config_path = Path(__file__).resolve().parents[1] / "configs/cdl_c_4t64r_codebooks_long.json"
         cfg = load_config(config_path)

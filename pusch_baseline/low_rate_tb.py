@@ -1,4 +1,4 @@
-"""NR RV0 rate matching for rates below the Sionna LDPC constructor limits."""
+"""NR RV0 coding for grants requiring explicit base-graph or rate matching."""
 
 from dataclasses import dataclass
 
@@ -19,7 +19,11 @@ class LowRatePlan:
     base_graph: str
 
 
-def low_rate_plan(pc):
+def _base_graph_two(payload_size, rate):
+    return payload_size <= 292 or (payload_size <= 3824 and rate <= 0.67) or rate <= 0.25
+
+
+def low_rate_plan(pc, *, allow_low_rate=True):
     tbs, cb_size, _, tb_crc, cb_crc, cw_lengths = calculate_tb_size(
         target_tb_size=pc.tb_size, num_coded_bits=pc.num_coded_bits,
         target_coderate=pc.tb.target_coderate, modulation_order=pc.tb.num_bits_per_symbol,
@@ -28,15 +32,16 @@ def low_rate_plan(pc):
     k = int(cb_size)
     lengths = tuple(int(n) for n in cw_lengths.numpy())
     effective_rate = k / max(lengths)
-    # Mirror the stock LDPC constructor's branch before deciding whether
-    # it needs the RV0 extension. Do not change other grants.
-    native_bg2 = k <= 292 or (k <= 3824 and effective_rate <= 0.67) or effective_rate <= 0.25
-    if effective_rate >= (1 / 5 if native_bg2 else 1 / 3):
+    # Sionna 1.2.2 gives its LDPC constructor the code-block size (including
+    # CRC) and k/E. TS 38.212 §6.2.2 uses transport payload A and target R.
+    native_bg2 = _base_graph_two(k, effective_rate)
+    bg2 = _base_graph_two(int(tbs), float(pc.tb.target_coderate))
+    below_native_limit = effective_rate < (1 / 5 if bg2 else 1 / 3)
+    if not below_native_limit and native_bg2 == bg2:
         return None
-    # TS 38.212 §6.2.2 selects the UL-SCH graph using the TBS and target rate.
-    a, rate = int(tbs), float(pc.tb.target_coderate)
-    bg2 = a <= 292 or (a <= 3824 and rate <= 0.67) or rate <= 0.25
-    return LowRatePlan(a, k, int(tb_crc), int(cb_crc), lengths, "bg2" if bg2 else "bg1")
+    if below_native_limit and not allow_low_rate:
+        raise ValueError("This grant requires low-rate RV0 rate matching")
+    return LowRatePlan(int(tbs), k, int(tb_crc), int(cb_crc), lengths, "bg2" if bg2 else "bg1")
 
 
 class _Rv0MotherEncoder(LDPC5GEncoder):

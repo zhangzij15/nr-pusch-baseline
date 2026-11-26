@@ -5,7 +5,7 @@ from math import isfinite
 import unittest
 
 from pusch_baseline import SimulationConfig, simulate
-from pusch_baseline.config import AdaptationSettings
+from pusch_baseline.config import AdaptationSettings, OllaSettings
 
 
 class TddSimulationTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class TddSimulationTests(unittest.TestCase):
 
             def cir(batch_size, num_time_steps, sampling_frequency):
                 self.assertEqual(batch_size, 1)
-                self.assertEqual(sampling_frequency, 1 / grid.ofdm_symbol_duration)
+                self.assertEqual(sampling_frequency, 14 / _config.slot_duration_s)
                 # Native four-port rank-one TPMI 0 and 3 select ports 0 and 3.
                 active_port = 0 if len(cir_lengths) % 2 == 0 else 3
                 cir_lengths.append(num_time_steps)
@@ -110,6 +110,39 @@ class TddSimulationTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["adaptation"]["srs_estimator"], "perfect")
         # Two TBs on DSUDD with a 5-slot period use two SRS epochs.
         self.assertEqual([grant["tpmi"] for grant in point["srs_grants"]], [3, 3])
+
+    def test_measurement_follows_physical_tdd_phase_after_warmup(self):
+        import tensorflow as tf
+
+        for pattern, period, expected_srs, expected_data in (
+            ("DSUDDDSUUD", 5, [6, 11, 16], [7, 8, 12, 17, 18]),
+            ("DSUUDDDSUU", 4, [7, 11, 17], [8, 9, 12, 13, 18]),
+        ):
+            with self.subTest(pattern=pattern):
+                cfg = replace(self.config, adaptation=replace(
+                    self.config.adaptation, tdd_pattern=pattern, srs_period_slots=period,
+                    channel_evolution="continuous", srs_estimator="perfect", mcs_indices=(5,),
+                    olla=OllaSettings(warmup_tb=1, window_tb=1),
+                ))
+
+                def factory(_cfg, _grid):
+                    def cir(_batch, steps, _rate):
+                        # A PUSCH sent on D sees a complete outage.
+                        slot = tf.range(steps) // 14 % len(pattern)
+                        gain = tf.gather([float(kind != "D") for kind in pattern], slot)
+                        gains = tf.reshape(tf.cast(gain, tf.complex64), (1, 1, 1, 1, 1, 1, steps))
+                        return tf.tile(gains, (1, 1, 1, 1, 4, 1, 1)), tf.zeros((1, 1, 1, 1))
+
+                    return cir
+
+                result = simulate(cfg, channel_model_factory=factory)
+                point, = result["points"]
+                start = result["metadata"]["adaptation"]["measurement_start_slot"]
+                self.assertEqual([start + g["slot_index"] for g in point["srs_grants"]], expected_srs)
+                self.assertEqual([start + t["slot_index"] for t in point["mcs_trace"]], expected_data)
+                self.assertEqual(point["tb_errors"], 0)
+                self.assertEqual(point["num_slots"], expected_data[-1] + 1 - start)
+                self.assertEqual(sum(c["num_slots"] for c in point["throughput_srs_clusters"]), point["num_slots"])
 
     def test_tdd_validation_rejects_missing_slots_partial_band_or_double_duty(self):
         config = self.config

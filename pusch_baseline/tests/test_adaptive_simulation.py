@@ -108,7 +108,7 @@ class AdaptiveSimulationTests(unittest.TestCase):
             self.assertGreater(grid.cyclic_prefix_length, 0)
 
             def cir(batch_size, num_time_steps, sampling_frequency):
-                self.assertEqual(sampling_frequency, 1 / grid.ofdm_symbol_duration)
+                self.assertEqual(sampling_frequency, 14 / _config.slot_duration_s)
                 cir_calls.append((batch_size, num_time_steps))
                 # The channel is strong during sounding and in outage during PUSCH.
                 gains = tf.cast(tf.range(num_time_steps) < 14, tf.complex64)

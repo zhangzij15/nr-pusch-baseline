@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import numpy as np
 import tensorflow as tf
 from sionna.phy import PI, config as sionna_config
 from sionna.phy.channel.tr38901 import CDL, TDL, Rays, Topology
 from sionna.phy.utils import flatten_last_dims, insert_dims, split_dim
 
 from .link import _OrientationSampledCdl
+
+
+def _normal_cp_symbol_starts(symbol_indices, spacing_khz):
+    """NR symbol starts in seconds, including the longer CP every half subframe."""
+    indices = np.asarray(symbol_indices, dtype=np.int64)
+    slots_per_subframe = spacing_khz // 15
+    symbols_per_half_ms = 7 * slots_per_subframe
+    half_ms, symbol = np.divmod(indices, symbols_per_half_ms)
+    # TS 38.211 5.3.1, expressed in units of 1 / 30.72 MHz.
+    ticks = symbol * (2048 + 144) / slots_per_subframe + (symbol != 0) * 16
+    return half_ms * 0.0005 + ticks / 30_720_000
 
 
 class ContinuousCir:
@@ -30,13 +42,19 @@ class ContinuousCir:
         self.rewind()
 
     def rewind(self) -> None:
+        self._next_state = self._initial_state
+        if isinstance(self._raw_model, _OrientationSampledCdl):
+            self._raw_model.rewind()
+        self.next_drop()
+
+    def next_drop(self) -> None:
+        """Draw the next independent period from the isolated fading stream."""
         self._cached_custom = None
         caller_state = self._rng.state.read_value()
-        self._rng.reset(self._initial_state)
+        self._rng.reset(self._next_state)
         try:
             model = self._raw_model
             if isinstance(model, _OrientationSampledCdl):
-                model.rewind()
                 model = model._models[model._rng.integers(len(model._models))]
             self._model = model
             if isinstance(model, CDL):
@@ -47,7 +65,7 @@ class ContinuousCir:
                 self._state = self._init_tdl(model)
             else:
                 self._kind = "custom"
-                self._state = self._rng.state.read_value()
+            self._next_state = self._rng.state.read_value()
         finally:
             self._rng.reset(caller_state)
 
@@ -105,27 +123,30 @@ class ContinuousCir:
         delays = insert_dims(tdl.delays, 3, 0)
         return doppler, alpha, phi, phi_0, delays
 
-    def sample(self, symbol_indices, sampling_frequency: float):
-        """Return (path_gains, delays) evaluated at absolute OFDM symbol indices."""
+    def sample(self, symbol_indices, sampling_frequency: float, *, sample_times=None):
+        """Sample built-ins at optional physical times; custom CIRs take a uniform rate."""
         indices = tf.convert_to_tensor(symbol_indices, dtype=tf.int32)
+        if self._kind != "custom":
+            dtype = self._model.rdtype
+            sample_times = (tf.cast(indices, dtype) / sampling_frequency if sample_times is None
+                            else tf.convert_to_tensor(sample_times, dtype=dtype))
         if self._kind == "cdl":
             phi, topology, k_factor, rays = self._state
-            sample_times = tf.cast(indices, self._model.rdtype) / sampling_frequency
             h, delays = self._model._cir_sampler._step_11(phi, topology, k_factor, rays, sample_times, None)
             h = tf.stop_gradient(tf.transpose(h, [0, 2, 4, 1, 5, 3, 6]))
             delays = tf.stop_gradient(tf.transpose(delays, [0, 2, 1, 3]))
             return h, delays
 
         if self._kind == "tdl":
-            return self._sample_tdl(indices, sampling_frequency)
+            return self._sample_tdl(sample_times)
 
         if self._cached_custom is None:
             needed = max(self._total_symbols or 0, int(tf.reduce_max(indices).numpy()) + 1)
             caller_state = self._rng.state.read_value()
-            self._rng.reset(self._state)
+            self._rng.reset(self._next_state)
             try:
                 self._cached_custom = self._model(1, needed, sampling_frequency)
-                self._state = self._rng.state.read_value()
+                self._next_state = self._rng.state.read_value()
             finally:
                 self._rng.reset(caller_state)
         path_gains, delays = self._cached_custom
@@ -137,10 +158,9 @@ class ContinuousCir:
             )
         return tf.gather(path_gains, indices, axis=-1), delays
 
-    def _sample_tdl(self, indices, sampling_frequency: float):
+    def _sample_tdl(self, sample_times):
         tdl = self._model
         doppler, alpha, phi, phi_0, delays = self._state
-        sample_times = tf.cast(indices, tdl.rdtype) / sampling_frequency
         sample_times_8d = tf.expand_dims(insert_dims(sample_times, 6, 0), -1)
 
         argument = doppler * sample_times_8d * tf.cos(alpha) + phi

@@ -38,7 +38,7 @@ class OnlineOllaTests(unittest.TestCase):
         outcomes = [1] + [0] * 9 + [1] + [0] * 8 + [1]
         modulation_orders = []
 
-        def decode(link, batch_size, _noise, *, channel_response):
+        def decode(link, batch_size, _noise, *, channel_response, **_):
             self.assertEqual(batch_size, 1)
             self.assertIsNotNone(channel_response)
             outcome = outcomes[len(modulation_orders)]
@@ -87,7 +87,7 @@ class OnlineOllaTests(unittest.TestCase):
 
             return channel
 
-        def decode(link, _batch_size, _noise, *, channel_response):
+        def decode(link, _batch_size, _noise, *, channel_response, **_):
             grant = link.grant_metadata
             grants.append((len(grant["dmrs_ports"]), grant["qam_bits_per_symbol"]))
             return int(len(grants) == 1)

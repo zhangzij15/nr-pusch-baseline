@@ -18,6 +18,8 @@ PROJECT = Path(__file__).resolve().parent
 PACKAGE = PROJECT / "pusch_baseline"
 DEFAULT_CONFIG = PACKAGE / "configs" / "cdl_c_4t64r_codebooks.json"
 MCS_ROWS = tuple(range(29))
+# The CIR clock, TPMI scoring and transport-block coding affect saved measurements.
+WATERFALL_REVISION = 2
 
 
 def _run_curve(config, bank, mcs, batch_size, fixed_snrs, directory, min_snr_step=1.0):
@@ -186,6 +188,7 @@ def main():
     directory = (args.output_dir or PACKAGE / "results" / f"mcs_waterfall_{stamp}").resolve()
     directory.mkdir(parents=True, exist_ok=True)
     manifest = {
+        "simulation_revision": WATERFALL_REVISION,
         "config": json.loads(json.dumps(cfg.to_dict())),
         "num_tb_per_point": args.num_tb,
         "batch_size": args.batch_size,
@@ -197,6 +200,8 @@ def main():
     manifest_file = directory / "settings.json"
     if manifest_file.exists():
         stored_manifest = _restore_legacy_manifest_defaults(json.loads(manifest_file.read_text(encoding="utf-8")))
+        if stored_manifest.get("simulation_revision") != WATERFALL_REVISION:
+            parser.error("this waterfall was measured with a different simulator revision; use a new output directory")
         if stored_manifest != manifest:
             parser.error("output directory contains a waterfall with different parameters")
     else:

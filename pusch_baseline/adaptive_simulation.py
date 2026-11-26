@@ -11,14 +11,13 @@ from itertools import count
 
 import numpy as np
 import tensorflow as tf
-from sionna.phy import config as sionna_config
 from sionna.phy.channel import cir_to_ofdm_channel, subcarrier_frequencies
 from sionna.phy.nr.utils import calculate_tb_size
 from sionna.phy.ofdm import ResourceGrid
 
 from .adaptation import select_grants, select_mcs_for_precoder
-from .continuous_channel import ContinuousCir
-from .link import PairedCir, PuschLink, _pusch_config, build_cir_model, precoder_amplitude_scale
+from .continuous_channel import ContinuousCir, _normal_cp_symbol_starts
+from .link import PuschLink, _pusch_config, build_cir_model, precoder_amplitude_scale
 from .mcs_stability import assess_mcs_stability
 from .olla import McsIndexController, OllaController
 from .srs import SrsEstimator
@@ -65,6 +64,7 @@ class SoundingChannel:
         self._continuous = (
             cfg.adaptation is not None and cfg.adaptation.channel_evolution == "continuous"
         )
+        self._sampled_epoch = False
         self._drop_rms = None
         if cfg.channel.kind == "awgn":
             dtype = tf.complex128 if cfg.precision == "double" else tf.complex64
@@ -73,8 +73,8 @@ class SoundingChannel:
             )
             self._model = None
         else:
-            # ResourceGrid uses a constant integer CP. Approximate the average
-            # normal CP across the slot and pass the same clock to the CIR.
+            # The grid represents occupied tones with an integer CP. Physical
+            # CIR timing is independent of FFT size and PRB allocation.
             average_cp = round(num_subcarriers * (cfg.slot_duration_s * subcarrier_spacing / 14 - 1))
             resource_grid = ResourceGrid(
                 num_ofdm_symbols=14, fft_size=num_subcarriers,
@@ -82,13 +82,12 @@ class SoundingChannel:
                 cyclic_prefix_length=average_cp,
                 num_streams_per_tx=cfg.pusch.num_antenna_ports, precision=cfg.precision,
             )
-            self._sampling_frequency = 1 / resource_grid.ofdm_symbol_duration
+            self._sampling_frequency = 14 / cfg.slot_duration_s
+            self._spacing_khz = cfg.carrier.subcarrier_spacing_khz
+            self._first_carrier_symbol = 14 * cfg.carrier.slot_number
             cir = build_cir_model(cfg, resource_grid, channel_model_factory)
-            if self._continuous:
-                total_symbols = None if total_slots is None else total_slots * 14
-                self._model = ContinuousCir(cir, cfg.sweep.seed, total_symbols=total_symbols)
-            else:
-                self._model = PairedCir(cir, cfg.sweep.seed)
+            total_symbols = total_slots * 14 if self._continuous and total_slots is not None else None
+            self._model = ContinuousCir(cir, cfg.sweep.seed, total_symbols=total_symbols)
 
     def _ideal_sounding(self, channel_slot):
         symbols = tf.gather(channel_slot, self._estimator.symbol_indices, axis=2)
@@ -105,43 +104,10 @@ class SoundingChannel:
                 yield self._awgn_response
             return
 
-        if self._continuous:
-            yield from self._continuous_slots(offsets, start_slot)
-            return
-
-        num_slots = offsets[-1] + 1
-        path_gains, delays = self._model(1, num_slots * 14, self._sampling_frequency)
-        if self._normalize:
-            sounding = _ofdm_frequency_response(self._frequencies, path_gains[..., :14], delays)
-            rms = tf.sqrt(tf.reduce_mean(tf.square(tf.abs(sounding))))
-            # A complete outage during sounding defines no scale for later slots.
-            rms = tf.cast(tf.where(rms > 0, rms, tf.ones_like(rms)), sounding.dtype)
-            if self._full_sounding_grid:
-                yield self._ideal_sounding(sounding[0, 0, :, 0] / rms)
-            else:
-                yield self._estimator.sample_pilots(sounding[0, 0, :, 0] / rms)
-            del sounding
-        else:
-            # All TX ports transmit on the multi-port SRS resource symbols.
-            srs_gains = tf.gather(path_gains, self._estimator.symbol_indices, axis=-1)
-            if self._full_sounding_grid:
-                sounding = _ofdm_frequency_response(self._frequencies, srs_gains, delays)
-                yield np.moveaxis(np.asarray(tf.reduce_mean(sounding[0, 0, :, 0], axis=2)), -1, 0)
-            else:
-                sounding = _ofdm_frequency_response(self._pilot_frequencies, srs_gains, delays)
-                yield sounding[0, 0, :, 0]
-            del sounding
-
-        for slot in offsets[1:]:
-            symbol = slot * 14
-            response = _ofdm_frequency_response(
-                self._frequencies, path_gains[..., symbol:symbol + 14], delays,
-            )
-            if self._normalize:
-                response = response / rms
-            yield response
-
-    def _continuous_slots(self, offsets, start_slot: int):
+        if not self._continuous and self._sampled_epoch:
+            self._model.next_drop()
+            self._drop_rms = None
+        self._sampled_epoch = True
         srs_abs_slot = start_slot + offsets[0]
         need_full_srs_slot = self._normalize and self._drop_rms is None
         srs_syms = (
@@ -152,7 +118,12 @@ class SoundingChannel:
         for off in offsets[1:]:
             chunks.append((start_slot + off) * 14 + np.arange(14, dtype=np.int32))
         all_indices = np.concatenate(chunks)
-        path_gains, delays = self._model.sample(all_indices, self._sampling_frequency)
+        origin = 0 if self._continuous else srs_abs_slot * 14
+        times = _normal_cp_symbol_starts(all_indices + self._first_carrier_symbol, self._spacing_khz)
+        times -= _normal_cp_symbol_starts(origin + self._first_carrier_symbol, self._spacing_khz)
+        path_gains, delays = self._model.sample(
+            all_indices - origin, self._sampling_frequency, sample_times=times,
+        )
 
         n_srs = len(srs_syms)
         srs_gains = path_gains[..., :n_srs]
@@ -187,7 +158,7 @@ class SoundingChannel:
             yield response
 
 
-def _sounding_epochs(settings, tb_limit):
+def _sounding_epochs(settings, tb_limit, *, start_slot=0):
     """Yield an SRS slot followed by its PUSCH slots on the physical timeline.
 
     With a TDD pattern, SRS uses the first S slot, then each first S slot at
@@ -198,14 +169,14 @@ def _sounding_epochs(settings, tb_limit):
     if pattern is None:
         data_per_epoch = settings.srs_period_slots - 1
         for sent in range(0, tb_limit, data_per_epoch):
-            start = sent + sent // data_per_epoch
+            start = start_slot + sent + sent // data_per_epoch
             length = 1 + min(data_per_epoch, tb_limit - sent)
             yield range(start, start + length)
         return
 
     epoch = []
     sent = 0
-    for slot in count():
+    for slot in count(start_slot):
         kind = pattern[slot % len(pattern)]
         if kind == "S" and (not epoch or slot - epoch[0] >= settings.srs_period_slots):
             if epoch:
@@ -301,7 +272,6 @@ def _summarize_point(cfg, candidates, snr_db, num_slots, num_srs_slots, counts, 
 class _SweepPoint:
     noise_variance: tf.Tensor
     srs_error_variance: np.ndarray
-    rng_state: tf.Tensor
     counts: dict
     srs_grants: dict
     mcs_trace: dict = field(default_factory=lambda: defaultdict(list))
@@ -311,6 +281,19 @@ class _SweepPoint:
     num_srs_slots: int = 0
     tb_errors: int = 0
     stop_reason: str = "max_tb"
+
+
+def _slot_pusch_inputs(seed, absolute_slot, max_tb_size, noise_shape, real_dtype):
+    """Pair the payload prefix and unit-variance complex noise by physical slot."""
+    payload_seed = tf.constant([seed ^ 0x5041594C, absolute_slot], tf.int64)
+    noise_seed = tf.constant([seed ^ 0x4157474E, absolute_slot], tf.int64)
+    bits = tf.random.stateless_uniform(
+        [1, 1, max_tb_size], payload_seed, minval=0, maxval=2, dtype=tf.int32, alg="philox",
+    )
+    components = tf.random.stateless_normal(
+        (*noise_shape, 2), noise_seed, stddev=0.5**0.5, dtype=real_dtype, alg="philox",
+    )
+    return tf.cast(bits, real_dtype), tf.complex(components[..., 0], components[..., 1])
 
 
 def _stability(trace, window_tb, olla):
@@ -392,17 +375,13 @@ def _schedule_grants(grants, controllers_at_snr, candidates, thresholds, margin_
     }
 
 
-def _next_stage_slot_offset(settings, tb_limit: int) -> int:
-    """Return the physical slot offset for a subsequent stage aligned to the SRS cadence."""
-    epochs = list(_sounding_epochs(settings, tb_limit))
-    first_srs = epochs[0][0]
-    last_srs = epochs[-1][0]
+def _next_sounding_slot(settings, last_srs: int) -> int:
+    """Find the next eligible sounding occasion on the same physical timeline."""
+    earliest = last_srs + settings.srs_period_slots
     pattern = settings.tdd_pattern
     if pattern is None:
-        return last_srs + settings.srs_period_slots - first_srs
-    for slot in count(last_srs + 1):
-        if pattern[slot % len(pattern)] == "S" and slot - last_srs >= settings.srs_period_slots:
-            return slot - first_srs
+        return earliest
+    return next(slot for slot in count(earliest) if pattern[slot % len(pattern)] == "S")
 
 
 def _build_adaptive_metadata(
@@ -415,7 +394,7 @@ def _build_adaptive_metadata(
     metadata.update({
         "snr_reference": "nominal unit UE data-RE power budget before precoding, per-RX RE noise",
         "sampling": (
-            "continuous symbol-accurate CIR trajectory across all SRS periods"
+            "continuous CIR trajectory across all SRS periods"
             if continuous else
             "SRS-led channel trajectories with potentially correlated TBs per cycle"
         ),
@@ -427,7 +406,7 @@ def _build_adaptive_metadata(
             "method": "percentile interval of resampled payload bits divided by resampled elapsed time",
             "scope": "observed measurement stage and controller trajectory; no warmup resampling",
         },
-        "snr_pairing": "identical CIR responses and standardized SRS noise shared by all SNR points",
+        "snr_pairing": "shared CIR, standardized SRS and PUSCH noise, and common payload prefixes per physical slot",
         "adaptation": {
             "srs_symbols": estimator.symbol_indices,
             "srs_cyclic_shifts": estimator.cyclic_shifts,
@@ -446,12 +425,18 @@ def _build_adaptive_metadata(
                 else "uniform offset drawn once per SRS period" if cfg.channel.ue_yaw_offsets_deg
                 else "fixed"
             ),
-            "policy": ("SRS selects spatial grant by effective SINR; ACK/NACK updates continuous MCS index"
-                       if direct_mcs else "configured thresholds on MI-averaged post-LMMSE SINR with PRB Gram averaging and SRS noise debiasing"),
+            "policy": ("SRS selects rank and TPMI by sum mutual information across layers and ACK/NACK updates the MCS index"
+                       if direct_mcs else "configured thresholds on MI-averaged post-LMMSE SINR"),
+            "spatial_scoring": "12-tone PRB Gram averages for both SRS estimators, with noise debiasing for real SRS",
             "pusch_channel_estimator": cfg.channel.estimator,
             "tb_decoder": "shared TensorFlow graphs for native Sionna and low-rate RV0",
         },
     })
+    if cfg.channel.kind != "awgn":
+        metadata["adaptation"]["cir_symbol_clock"] = (
+            "Built-in CDL/TDL use NR normal-CP symbol starts (TS 38.211 5.3.1). "
+            "Custom callables receive a uniform symbol rate of 14 / slot_duration_s."
+        )
     if olla is not None:
         metadata["adaptation"]["target_bler"] = olla.target_bler
         metadata["adaptation"]["feedback_control"] = olla.control
@@ -497,9 +482,14 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         start_symbol=settings.srs_start_symbol if tdd else None,
         power_per_active_re=1.0,
     )
-    measurement_slot_offset = _next_stage_slot_offset(settings, olla.warmup_tb) if olla is not None else 0
-    measurement_epochs = list(_sounding_epochs(settings, sweep.num_tb_per_snr))
-    total_slots = measurement_slot_offset + measurement_epochs[-1][-1] + 1
+    warmup_epochs = list(_sounding_epochs(settings, olla.warmup_tb)) if olla else []
+    measurement_start = first_sounding = 0
+    if warmup_epochs:
+        first_sounding = _next_sounding_slot(settings, warmup_epochs[-1][0])
+        # Preserve the initial lead-in before sounding when it fits after warmup.
+        measurement_start = max(warmup_epochs[-1][-1] + 1, first_sounding - warmup_epochs[0][0])
+    measurement_epochs = list(_sounding_epochs(settings, sweep.num_tb_per_snr, start_slot=first_sounding))
+    total_slots = measurement_epochs[-1][-1] + 1
     channel = SoundingChannel(
         cfg, channel_model_factory, estimator, full_sounding_grid=srs_ideal, total_slots=total_slots,
     )
@@ -516,7 +506,9 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         )
 
     reference_link = link(next(iter(candidates)), cfg.carrier.slot_number)
-    data_rng = sionna_config.tf_rng
+    max_tb_size = max(size for _, size in candidates.values())
+    grid = reference_link.resource_grid
+    noise_shape = (1, 1, cfg.num_rx_ant, grid.num_ofdm_symbols, grid.fft_size)
     noise_points = {snr_db: reference_link.noise_variance(snr_db) for snr_db in sweep.snr_db}
     controllers = None
     if olla is not None:
@@ -528,14 +520,10 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
             } for snr_db in noise_points
         }
 
-    def run_stage(tb_limit, *, calibrating=False, slot_offset: int = 0):
-        # Each SNR starts with the same payload/noise stream. Different grants can
-        # consume different numbers of draws. The CIR stream is isolated from it.
-        seed = sweep.seed ^ (0x4F4C4C41 if calibrating else 0)
-        start_state = tf.random.Generator.from_seed(seed, alg=data_rng.algorithm).state.read_value()
+    def run_stage(epochs, tb_limit, *, calibrating=False, slot_offset: int = 0):
         states = {
             snr_db: _SweepPoint(
-                no, estimator.error_variance(float(no)), start_state,
+                no, estimator.error_variance(float(no)),
                 {name: defaultdict(lambda: [0, 0]) for name in codebook_keys},
                 {name: [] for name in codebook_keys},
             ) for snr_db, no in noise_points.items()
@@ -543,13 +531,13 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         channel_hash = sha256() if check_stability else None
         phase = "warmup" if calibrating else "measurement"
         progress_interval = max(1, tb_limit // 10)
-        for epoch in _sounding_epochs(settings, tb_limit):
+        for epoch in epochs:
             active = {snr_db: state for snr_db, state in states.items() if state.stop_reason == "max_tb"}
             if not active:
                 break
-            srs_slot = epoch[0]
+            srs_slot = epoch[0] - slot_offset
             responses = channel.slots(
-                tuple(slot - srs_slot for slot in epoch), start_slot=slot_offset + srs_slot,
+                tuple(slot - epoch[0] for slot in epoch), start_slot=epoch[0],
             )
             sounding = np.asarray(next(responses))
             if channel_hash is not None:
@@ -584,11 +572,15 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                             "mcs_index": controllers[snr_db][name].mcs_index if direct_mcs else mcs,
                             "effective_sinr_db": sinr_db,
                         })
-            for data_slot, response in zip(epoch[1:], responses):
+            for absolute_data_slot, response in zip(epoch[1:], responses):
+                data_slot = absolute_data_slot - slot_offset
                 if channel_hash is not None:
                     channel_hash.update(np.asarray(response[..., 0, 0]).tobytes())
                 # DM-RS and scrambling follow the physical slot of the shared CIR timeline.
-                slot_number = (cfg.carrier.slot_number + slot_offset + data_slot) % slots_per_frame
+                slot_number = (cfg.carrier.slot_number + absolute_data_slot) % slots_per_frame
+                payload, standard_noise = _slot_pusch_inputs(
+                    sweep.seed, absolute_data_slot, max_tb_size, noise_shape, response.dtype.real_dtype,
+                )
                 for snr_db, grants in decisions.items():
                     state = states[snr_db]
                     if state.stop_reason != "max_tb":
@@ -597,15 +589,14 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                         grants, None if controllers is None else controllers[snr_db],
                         candidates, thresholds, settings.sinr_margin_db, direct_mcs,
                     )
-                    data_rng.reset(state.rng_state)
                     errors = {}
                     for key in dict.fromkeys(scheduled.values()):
                         pusch_link = link(key, slot_number)
                         symbols = pusch_link.resource_grid.num_ofdm_symbols
                         errors[key] = pusch_link.count_block_errors(
                             1, state.noise_variance, channel_response=response[..., :symbols, :],
+                            payload=payload[..., :pusch_link.tb_size_bits], standard_noise=standard_noise,
                         )
-                    state.rng_state = data_rng.state.read_value()
                     for name, key in scheduled.items():
                         failed = errors[key]
                         if controllers is not None:
@@ -641,7 +632,7 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
 
     warmup_hash = None
     if controllers is not None:
-        warmup, warmup_hash = run_stage(olla.warmup_tb, calibrating=True, slot_offset=0)
+        warmup, warmup_hash = run_stage(warmup_epochs, olla.warmup_tb, calibrating=True)
         calibration = {
             snr_db: {name: controller.summary() for name, controller in group.items()}
             for snr_db, group in controllers.items()
@@ -652,7 +643,7 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
                     group[name] = _check_calibration(
                         summary, warmup[snr_db].mcs_trace[name], olla, lowest_mcs, highest_mcs,
                     )
-    states, measurement_hash = run_stage(sweep.num_tb_per_snr, slot_offset=measurement_slot_offset)
+    states, measurement_hash = run_stage(measurement_epochs, sweep.num_tb_per_snr, slot_offset=measurement_start)
 
     points = {name: [] for name in codebook_keys}
     for snr_db, state in states.items():
@@ -681,6 +672,7 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         cfg, metadata, estimator, direct_mcs=direct_mcs, check_stability=check_stability,
         mcs_indices=mcs_indices, warmup_hash=warmup_hash, measurement_hash=measurement_hash,
     )
+    metadata["adaptation"]["measurement_start_slot"] = measurement_start
     if codebooks is None:
         return {"config": cfg.to_dict(), "metadata": metadata, "points": points[None]}
 
@@ -690,7 +682,8 @@ def simulate_adaptive(cfg, metadata, channel_model_factory, on_point, *, codeboo
         runs[name] = {
             "config": replace(cfg, adaptation=variant_settings).to_dict(),
             "metadata": {**metadata, "fixed_rank": cfg.pusch.rank, "codebook_tpmi": list(tpmi),
-                         "pairing": "shared channel and SRS; shared payload and decoder result for identical grants"},
+                         "pairing": ("shared channel, SRS, standardized PUSCH noise and payload prefixes "
+                                     "with one decode per distinct grant")},
             "points": points[name],
         }
     return runs
